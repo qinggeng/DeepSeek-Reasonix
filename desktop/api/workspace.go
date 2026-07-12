@@ -210,6 +210,47 @@ func handleTopicsResource(ctrl DesktopControl, w http.ResponseWriter, r *http.Re
 			HandleSetApprovalMode(ctrl)(w, r)
 			return
 		}
+	// History & traceback actions (Sprint 5).
+	case "history":
+		if r.Method == http.MethodGet {
+			HandleHistory(ctrl)(w, r)
+			return
+		}
+	case "history/checkpoints":
+		if r.Method == http.MethodGet {
+			HandleCheckpoints(ctrl)(w, r)
+			return
+		}
+	case "history/branches":
+		if r.Method == http.MethodGet {
+			HandleBranches(ctrl)(w, r)
+			return
+		}
+	case "history/rewind":
+		if r.Method == http.MethodPost {
+			HandleRewind(ctrl)(w, r)
+			return
+		}
+	case "history/fork":
+		if r.Method == http.MethodPost {
+			HandleFork(ctrl)(w, r)
+			return
+		}
+	case "history/compact":
+		if r.Method == http.MethodPost {
+			HandleCompact(ctrl)(w, r)
+			return
+		}
+	case "history/summarize":
+		if r.Method == http.MethodPost {
+			HandleSummarize(ctrl)(w, r)
+			return
+		}
+	case "history/tool-result":
+		if r.Method == http.MethodGet {
+			HandleToolResult(ctrl)(w, r)
+			return
+		}
 	}
 	gateway.WriteError(w, http.StatusNotFound, "unknown topic action: "+action)
 }

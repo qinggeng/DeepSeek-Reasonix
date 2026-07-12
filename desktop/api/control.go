@@ -43,4 +43,15 @@ type DesktopControl interface {
 	PendingPrompt(topicID string) (bool, error)
 	ReplayPendingPrompts()
 	SetApprovalMode(topicID, mode string) error
+
+	// History & Traceback (Sprint 5).
+	History(topicID string, beforeTurn, limit int) (HistoryResponse, error)
+	Checkpoints(topicID string) ([]CheckpointMeta, error)
+	Branches(topicID string) ([]BranchInfo, error)
+	Rewind(topicID string, turn int, scope string) error
+	ForkSession(topicID string, turn int, name string) (string, error)
+	CompactSession(topicID string) error
+	SummarizeFrom(topicID string, turn int) error
+	SummarizeUpTo(topicID string, turn int) error
+	ToolResult(topicID, toolID string) (ToolResultResponse, error)
 }

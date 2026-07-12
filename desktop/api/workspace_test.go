@@ -43,6 +43,17 @@ type mockControl struct {
 	pendingPromptFn   func(topicID string) (bool, error)
 	replayPromptsFn   func()
 	setApprovalModeFn func(topicID, mode string) error
+
+	// History & Traceback mock fields (Sprint 5).
+	historyFn       func(topicID string, beforeTurn, limit int) (HistoryResponse, error)
+	checkpointsFn   func(topicID string) ([]CheckpointMeta, error)
+	branchesFn      func(topicID string) ([]BranchInfo, error)
+	rewindFn        func(topicID string, turn int, scope string) error
+	forkSessionFn   func(topicID string, turn int, name string) (string, error)
+	compactFn       func(topicID string) error
+	summarizeFromFn func(topicID string, turn int) error
+	summarizeUpToFn func(topicID string, turn int) error
+	toolResultFn    func(topicID, toolID string) (ToolResultResponse, error)
 }
 
 func (m *mockControl) ListWorkspaces() []WorkspaceMeta {
@@ -234,6 +245,69 @@ func (m *mockControl) SetApprovalMode(topicID, mode string) error {
 		return m.setApprovalModeFn(topicID, mode)
 	}
 	return fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) History(topicID string, beforeTurn, limit int) (HistoryResponse, error) {
+	if m.historyFn != nil {
+		return m.historyFn(topicID, beforeTurn, limit)
+	}
+	return HistoryResponse{}, fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) Checkpoints(topicID string) ([]CheckpointMeta, error) {
+	if m.checkpointsFn != nil {
+		return m.checkpointsFn(topicID)
+	}
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) Branches(topicID string) ([]BranchInfo, error) {
+	if m.branchesFn != nil {
+		return m.branchesFn(topicID)
+	}
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) Rewind(topicID string, turn int, scope string) error {
+	if m.rewindFn != nil {
+		return m.rewindFn(topicID, turn, scope)
+	}
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) ForkSession(topicID string, turn int, name string) (string, error) {
+	if m.forkSessionFn != nil {
+		return m.forkSessionFn(topicID, turn, name)
+	}
+	return "", fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) CompactSession(topicID string) error {
+	if m.compactFn != nil {
+		return m.compactFn(topicID)
+	}
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) SummarizeFrom(topicID string, turn int) error {
+	if m.summarizeFromFn != nil {
+		return m.summarizeFromFn(topicID, turn)
+	}
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) SummarizeUpTo(topicID string, turn int) error {
+	if m.summarizeUpToFn != nil {
+		return m.summarizeUpToFn(topicID, turn)
+	}
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockControl) ToolResult(topicID, toolID string) (ToolResultResponse, error) {
+	if m.toolResultFn != nil {
+		return m.toolResultFn(topicID, toolID)
+	}
+	return ToolResultResponse{}, fmt.Errorf("not implemented")
 }
 
 // --- helpers ---

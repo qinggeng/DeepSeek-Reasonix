@@ -495,6 +495,159 @@ func (c *appControl) SetApprovalMode(topicID, mode string) error {
 	return nil
 }
 
+// --- History & Traceback methods (Sprint 5) ---
+
+func (c *appControl) History(topicID string, beforeTurn, limit int) (api.HistoryResponse, error) {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return api.HistoryResponse{}, fmt.Errorf("topic not found: %s", topicID)
+	}
+	page := c.app.HistoryPageForTab(tabID, beforeTurn, limit)
+	messages := make([]api.HistoryMessage, len(page.Messages))
+	for i, m := range page.Messages {
+		messages[i] = historyMessageToAPI(m)
+	}
+	return api.HistoryResponse{
+		Messages:   messages,
+		TotalTurns: page.TotalTurns,
+		HasMore:    page.HasOlder,
+	}, nil
+}
+
+func (c *appControl) Checkpoints(topicID string) ([]api.CheckpointMeta, error) {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return nil, fmt.Errorf("topic not found: %s", topicID)
+	}
+	ckpts := c.app.CheckpointsForTab(tabID)
+	result := make([]api.CheckpointMeta, len(ckpts))
+	for i, cp := range ckpts {
+		result[i] = api.CheckpointMeta{
+			Turn:   cp.Turn,
+			Time:   cp.Time,
+			Prompt: cp.Prompt,
+			Paths:  cp.Files,
+		}
+	}
+	return result, nil
+}
+
+func (c *appControl) Branches(topicID string) ([]api.BranchInfo, error) {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return nil, fmt.Errorf("topic not found: %s", topicID)
+	}
+	_, ctrl := c.app.tabAndCtrlByID(tabID)
+	if ctrl == nil {
+		return nil, fmt.Errorf("topic not ready: %s", topicID)
+	}
+	branches, err := ctrl.Branches()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]api.BranchInfo, len(branches))
+	for i, b := range branches {
+		createdAt := b.CreatedAt.UnixMilli()
+		updatedAt := b.UpdatedAt.UnixMilli()
+		result[i] = api.BranchInfo{
+			ID:        b.ID,
+			Name:      b.Name,
+			ParentID:  b.ParentID,
+			ForkTurn:  b.ForkTurn,
+			Turns:     b.Turns,
+			Preview:   b.Preview,
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		}
+	}
+	return result, nil
+}
+
+func (c *appControl) Rewind(topicID string, turn int, scope string) error {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return fmt.Errorf("topic not found: %s", topicID)
+	}
+	return c.app.RewindForTab(tabID, turn, scope)
+}
+
+func (c *appControl) ForkSession(topicID string, turn int, name string) (string, error) {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return "", fmt.Errorf("topic not found: %s", topicID)
+	}
+	meta, err := c.app.ForkForTab(tabID, turn)
+	if err != nil {
+		return "", err
+	}
+	return meta.SessionPath, nil
+}
+
+func (c *appControl) CompactSession(topicID string) error {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return fmt.Errorf("topic not found: %s", topicID)
+	}
+	return c.app.CompactForTab(tabID)
+}
+
+func (c *appControl) SummarizeFrom(topicID string, turn int) error {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return fmt.Errorf("topic not found: %s", topicID)
+	}
+	return c.app.SummarizeFromForTab(tabID, turn)
+}
+
+func (c *appControl) SummarizeUpTo(topicID string, turn int) error {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return fmt.Errorf("topic not found: %s", topicID)
+	}
+	return c.app.SummarizeUpToForTab(tabID, turn)
+}
+
+func (c *appControl) ToolResult(topicID, toolID string) (api.ToolResultResponse, error) {
+	tabID := c.findTabIDByTopicID(topicID)
+	if tabID == "" {
+		return api.ToolResultResponse{}, fmt.Errorf("topic not found: %s", topicID)
+	}
+	data := c.app.ToolResultForTab(tabID, toolID)
+	if data == nil {
+		return api.ToolResultResponse{}, fmt.Errorf("tool not found: %s", toolID)
+	}
+	return api.ToolResultResponse{
+		ToolID: toolID,
+		Args:   data.Args,
+		Output: data.Output,
+	}, nil
+}
+
+// historyMessageToAPI converts an App-level HistoryMessage to an API-level HistoryMessage.
+func historyMessageToAPI(m HistoryMessage) api.HistoryMessage {
+	toolCalls := make([]api.HistoryToolCall, len(m.ToolCalls))
+	for i, tc := range m.ToolCalls {
+		toolCalls[i] = api.HistoryToolCall{
+			ID:        tc.ID,
+			Name:      tc.Name,
+			Arguments: tc.Arguments,
+		}
+	}
+	return api.HistoryMessage{
+		Role:           m.Role,
+		Content:        m.Content,
+		Reasoning:      m.Reasoning,
+		ToolCalls:      toolCalls,
+		ToolCallID:     m.ToolCallID,
+		ToolName:       m.ToolName,
+		Pending:        m.Pending,
+		CheckpointTurn: m.CheckpointTurn,
+		Messages:       m.Messages,
+		Summary:        m.Summary,
+		WorkDurationMs: m.WorkDurationMs,
+	}
+}
+
 // handleDebug returns a handler that dumps diagnostic state for troubleshooting.
 func handleDebug(ctrl api.DesktopControl) gateway.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

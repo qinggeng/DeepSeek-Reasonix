@@ -114,3 +114,84 @@ type ApprovalModeRequest struct {
 type PendingResponse struct {
 	Pending bool `json:"pending"`
 }
+
+// --- History & Traceback types (Sprint 5) ---
+
+// HistoryToolCall represents a tool invocation in history.
+type HistoryToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// HistoryMessage represents a single message in the conversation history.
+type HistoryMessage struct {
+	Role              string            `json:"role"`
+	Content           string            `json:"content"`
+	Reasoning         string            `json:"reasoning,omitempty"`
+	ToolCalls         []HistoryToolCall `json:"toolCalls,omitempty"`
+	ToolCallID        string            `json:"toolCallId,omitempty"`
+	ToolName          string            `json:"toolName,omitempty"`
+	Pending           bool              `json:"pending,omitempty"`
+	CheckpointTurn    *int              `json:"checkpointTurn,omitempty"`
+	Messages          int               `json:"messages,omitempty"`
+	Summary           string            `json:"summary,omitempty"`
+	WorkDurationMs    int64             `json:"workDurationMs,omitempty"`
+}
+
+// HistoryResponse is the response for a history query.
+type HistoryResponse struct {
+	Messages   []HistoryMessage `json:"messages"`
+	TotalTurns int              `json:"totalTurns"`
+	HasMore    bool             `json:"hasMore"`
+}
+
+// CheckpointMeta represents an automatic checkpoint in the session.
+type CheckpointMeta struct {
+	Turn   int      `json:"turn"`
+	Time   int64    `json:"time"`
+	Prompt string   `json:"prompt"`
+	Paths  []string `json:"paths"`
+}
+
+// BranchInfo represents a session branch.
+type BranchInfo struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	ParentID  string `json:"parentId,omitempty"`
+	ForkTurn  int    `json:"forkTurn,omitempty"`
+	Turns     int    `json:"turns"`
+	Preview   string `json:"preview,omitempty"`
+	CreatedAt int64  `json:"createdAt"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
+// RewindRequest is the request body for rewinding to a specific turn.
+type RewindRequest struct {
+	Turn  int    `json:"turn"`
+	Scope string `json:"scope,omitempty"`
+}
+
+// ForkRequest is the request body for forking from a specific turn.
+type ForkRequest struct {
+	Turn int    `json:"turn"`
+	Name string `json:"name,omitempty"`
+}
+
+// ForkResponse is the response after forking a session.
+type ForkResponse struct {
+	SessionPath string `json:"sessionPath"`
+}
+
+// SummarizeRequest is the request body for summarizing history.
+type SummarizeRequest struct {
+	Turn      int    `json:"turn"`
+	Direction string `json:"direction"` // "from" or "upto"
+}
+
+// ToolResultResponse is the response for a tool result query.
+type ToolResultResponse struct {
+	ToolID string `json:"toolId"`
+	Args   string `json:"args"`
+	Output string `json:"output"`
+}
