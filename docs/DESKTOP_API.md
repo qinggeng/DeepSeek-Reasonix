@@ -197,6 +197,120 @@ GET /api/topics/{topic_id}/status
 
 ---
 
+## 审批流
+
+审批流允许第三方客户端通过 HTTP API 响应 Agent 的审批请求，支持工具调用审批、多选问答、审批模式设置。
+
+> Agent 发出 `ApprovalRequest` / `AskRequest` SSE 事件后阻塞等待回复。客户端通过以下端点回复后 agent 恢复运行。
+
+---
+
+### 审批/拒绝工具调用
+
+```http
+POST /api/workspaces/{path}/topics/{id}/approve
+Content-Type: application/json
+
+{"id": "approval-uuid", "allow": true, "session": true}
+```
+
+**参数**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | SSE `ApprovalRequest` 事件的 `approvalId` |
+| `allow` | boolean | 是 | `true` 批准 / `false` 拒绝 |
+| `session` | boolean | 否 | 当前 session 内记住此决定（默认 `true`） |
+| `persist` | boolean | 否 | 持久化到配置（默认 `false`） |
+
+**响应 `200`**：
+
+```json
+{"status": "approved", "approvalId": "approval-uuid", "allow": true}
+```
+
+---
+
+### 回答多选问题
+
+```http
+POST /api/workspaces/{path}/topics/{id}/answer
+Content-Type: application/json
+
+{"id": "ask-uuid", "answers": [{"questionId": "q1", "selected": ["Option A"]}]}
+```
+
+**参数**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | SSE `AskRequest` 事件的 `askId` |
+| `answers[].questionId` | string | 是 | 问题 ID |
+| `answers[].selected` | string[] | 是 | 用户选择的选项 label |
+
+**响应 `200`**：
+
+```json
+{"status": "answered", "askId": "ask-uuid", "count": 1}
+```
+
+---
+
+### 查询待审批状态
+
+```http
+GET /api/workspaces/{path}/topics/{id}/pending
+```
+
+**响应 `200`**：
+
+```json
+{"pending": true}
+```
+
+`pending` 为 `true` 表示 agent 正在等待审批或问答回复，为 `false` 表示无待处理项。
+
+---
+
+### 设置审批模式
+
+```http
+POST /api/workspaces/{path}/topics/{id}/approval-mode
+Content-Type: application/json
+
+{"mode": "ask"}
+```
+
+**参数**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `mode` | string | 是 | `"ask"` 每次询问 / `"auto"` 自动批准低风险 / `"yolo"` 自动批准全部 |
+
+**响应 `200`**：
+
+```json
+{"status": "ok", "mode": "ask"}
+```
+
+---
+
+### 重放待审批 prompt
+
+```http
+POST /api/approval/replay
+```
+
+Agent 启动后可能已有 pending 审批（比如重启恢复 session）。调用此端点使所有活跃 tab 重新发出 `ApprovalRequest` / `AskRequest` SSE 事件。
+
+**响应 `200`**：
+
+```json
+{"status": "ok"}
+```
+
+---
+
 ## 通用错误
 
 | HTTP 状态码 | 说明 |
@@ -220,8 +334,8 @@ GET /api/topics/{topic_id}/status
 |----|------|
 | Workspace 管理 | ✅ 已实现（Sprint 1） |
 | Topic 管理 | ✅ 已实现（Sprint 1） |
-| 核心 Agent 交互（submit/cancel/events） | 📋 待实现 |
-| Session 管理 | 📋 待实现 |
-| 审批流 | 📋 待实现 |
+| 核心 Agent 交互（submit/cancel/events） | ✅ 已实现（Sprint 2） |
+| Session 管理 | ✅ 已实现（Sprint 3） |
+| 审批流 | ✅ 已实现（Sprint 4） |
 | 模型与配置 | 📋 待实现 |
 | 认证（auth/CORS/rate-limit） | 📋 待实现 |
