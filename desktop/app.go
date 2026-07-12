@@ -29,6 +29,8 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"reasonix/desktop/gateway"
+
 	"reasonix/internal/agent"
 	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
@@ -202,6 +204,8 @@ type App struct {
 	skillRootsCache skillRootsCache
 
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
+
+	apiGW *gateway.Gateway // desktop HTTP API gateway; nil when disabled
 }
 
 type skillRootsCache struct {
@@ -430,6 +434,8 @@ func (a *App) startup(ctx context.Context) {
 
 	a.heartbeat = newHeartbeatEngine(a)
 	a.heartbeat.Start()
+
+	a.apiGW = startAPIServer(a)
 
 	a.mu.Lock()
 	a.tabsRestored = make(chan struct{})
@@ -759,6 +765,7 @@ func (a *App) shutdown(context.Context) {
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
 	}
+	stopAPIServer(a.apiGW)
 	a.stopBotRuntime()
 	a.stopTray()
 	// Save window geometry synchronously from Go so it's persisted even if the
