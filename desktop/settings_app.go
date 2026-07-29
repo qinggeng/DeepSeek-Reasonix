@@ -92,6 +92,7 @@ type ProviderModelOverrideView struct {
 	SupportedEfforts  []string `json:"supportedEfforts"`
 	DefaultEffort     string   `json:"defaultEffort"`
 	Vision            *bool    `json:"vision"`
+	ContextWindow     int      `json:"contextWindow,omitempty"`
 }
 
 type PermissionsView struct {
@@ -128,13 +129,15 @@ type NetworkView struct {
 }
 
 type AgentView struct {
-	Temperature       float64 `json:"temperature"`
-	MaxSteps          int     `json:"maxSteps"`
-	PlannerMaxSteps   int     `json:"plannerMaxSteps"`
-	MaxSubagentDepth  int     `json:"maxSubagentDepth"`
-	SystemPrompt      string  `json:"systemPrompt"`
-	ColdResumePrune   bool    `json:"coldResumePrune"`
-	ReasoningLanguage string  `json:"reasoningLanguage"`
+	Temperature            float64 `json:"temperature"`
+	MaxSteps               int     `json:"maxSteps"`
+	PlannerMaxSteps        int     `json:"plannerMaxSteps"`
+	MaxSubagentDepth       int     `json:"maxSubagentDepth"`
+	MaxSubagentConcurrency int     `json:"maxSubagentConcurrency"`
+	MaxParallelWriters     int     `json:"maxParallelWriters"`
+	SystemPrompt           string  `json:"systemPrompt"`
+	ColdResumePrune        bool    `json:"coldResumePrune"`
+	ReasoningLanguage      string  `json:"reasoningLanguage"`
 }
 
 type BotAllowlistView struct {
@@ -263,6 +266,7 @@ type SettingsView struct {
 	Agent                   AgentView            `json:"agent"`
 	Bot                     BotSettingsView      `json:"bot"`
 	DesktopLanguage         string               `json:"desktopLanguage"`
+	DesktopCurrency         string               `json:"desktopCurrency"`
 	DesktopLayoutStyle      string               `json:"desktopLayoutStyle"`
 	DesktopTheme            string               `json:"desktopTheme"`
 	DesktopThemeStyle       string               `json:"desktopThemeStyle"`
@@ -271,12 +275,14 @@ type SettingsView struct {
 	StatusBarStyle          string               `json:"statusBarStyle"`
 	StatusBarItems          []string             `json:"statusBarItems"`
 	DefaultToolApprovalMode string               `json:"defaultToolApprovalMode"`
-	CheckUpdates            bool                 `json:"checkUpdates"`
-	Telemetry               bool                 `json:"telemetry"`
-	Metrics                 bool                 `json:"metrics"`
-	MemoryCompiler          bool                 `json:"memoryCompilerEnabled"`
-	ExpandThinking          bool                 `json:"expandThinking"`
-	ConfigPath              string               `json:"configPath"`
+
+	CheckUpdates      bool   `json:"checkUpdates"`
+	UpdateChannel     string `json:"updateChannel"`
+	Telemetry         bool   `json:"telemetry"`
+	Metrics           bool   `json:"metrics"`
+	ExpandThinking    bool   `json:"expandThinking"`
+	ConversationWidth string `json:"conversationWidth,omitempty"`
+	ConfigPath        string `json:"configPath"`
 	// ProviderKinds lists the provider implementations the kernel actually
 	// registered (provider.Kinds()), so the editor's "kind" picker offers only
 	// kinds that resolve — selecting an unregistered one would fail the rebuild.
@@ -302,6 +308,9 @@ type DesktopStartupSettingsView struct {
 	StatusBarStyle     string          `json:"statusBarStyle"`
 	StatusBarItems     []string        `json:"statusBarItems"`
 	CheckUpdates       bool            `json:"checkUpdates"`
+	UpdateChannel      string          `json:"updateChannel"`
+	SafeMode           bool            `json:"safeMode,omitempty"`
+	ConversationWidth  string          `json:"conversationWidth,omitempty"`
 }
 
 func nonNil(s []string) []string {
@@ -354,6 +363,7 @@ func providerModelOverridesForView(overrides map[string]config.ProviderModelOver
 			SupportedEfforts:  nonNil(ov.SupportedEfforts),
 			DefaultEffort:     ov.DefaultEffort,
 			Vision:            ov.Vision,
+			ContextWindow:     ov.ContextWindow,
 		})
 	}
 	return out
@@ -378,8 +388,9 @@ func providerModelOverridesForSave(overrides []ProviderModelOverrideView, models
 			SupportedEfforts:  nonNil(item.SupportedEfforts),
 			DefaultEffort:     strings.TrimSpace(item.DefaultEffort),
 			Vision:            item.Vision,
+			ContextWindow:     max(item.ContextWindow, 0),
 		}
-		if strings.TrimSpace(ov.ReasoningProtocol) == "" && len(ov.SupportedEfforts) == 0 && strings.TrimSpace(ov.DefaultEffort) == "" && ov.Vision == nil {
+		if strings.TrimSpace(ov.ReasoningProtocol) == "" && len(ov.SupportedEfforts) == 0 && strings.TrimSpace(ov.DefaultEffort) == "" && ov.Vision == nil && ov.ContextWindow == 0 {
 			continue
 		}
 		out[model] = ov
@@ -756,6 +767,8 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 			StatusBarStyle:     "text",
 			StatusBarItems:     config.DefaultDesktopStatusBarItems(),
 			CheckUpdates:       true,
+			UpdateChannel:      "stable",
+			ConversationWidth:  "standard",
 		}
 	}
 	return DesktopStartupSettingsView{
@@ -768,6 +781,9 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		StatusBarStyle:     cfg.DesktopStatusBarStyle(),
 		StatusBarItems:     cfg.DesktopStatusBarItems(),
 		CheckUpdates:       cfg.DesktopCheckUpdates(),
+		UpdateChannel:      cfg.DesktopUpdateChannel(),
+		SafeMode:           cfg.SafeMode(),
+		ConversationWidth:  cfg.DesktopConversationWidth(),
 	}
 }
 
@@ -777,9 +793,13 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 func (a *App) DesktopStartupSettings() DesktopStartupSettingsView {
 	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
-		return desktopStartupSettingsFromConfig(nil)
+		view := desktopStartupSettingsFromConfig(nil)
+		view.SafeMode = config.SafeModeRequested()
+		return view
 	}
-	return desktopStartupSettingsFromConfig(cfg)
+	view := desktopStartupSettingsFromConfig(cfg)
+	view.SafeMode = config.SafeModeRequested()
+	return view
 }
 
 // Settings returns the current configuration for the Settings panel.
@@ -797,8 +817,15 @@ func (a *App) Settings() SettingsView {
 				Ask:   []string{},
 				Deny:  []string{},
 			},
-			Sandbox:                 SandboxView{Bash: config.Default().BashMode(), AllowWrite: []string{}, EffectiveWriteRoots: []string{}, Shell: "auto", EffectiveShell: sandboxEffectiveShellView(sandbox.ResolveShell("", "", nil))},
-			Agent:                   AgentView{PlannerMaxSteps: 0, MaxSubagentDepth: agent.DefaultMaxSubagentDepth, ColdResumePrune: true, ReasoningLanguage: "auto"},
+			Sandbox: SandboxView{Bash: config.Default().BashMode(), AllowWrite: []string{}, EffectiveWriteRoots: []string{}, Shell: "auto", EffectiveShell: sandboxEffectiveShellView(sandbox.ResolveShell("", "", nil))},
+			Agent: AgentView{
+				PlannerMaxSteps:        0,
+				MaxSubagentDepth:       agent.DefaultMaxSubagentDepth,
+				MaxSubagentConcurrency: agent.DefaultMaxSubagentConcurrency,
+				MaxParallelWriters:     agent.DefaultMaxParallelWriters,
+				ColdResumePrune:        true,
+				ReasoningLanguage:      "auto",
+			},
 			Bot:                     botSettingsView(config.BotConfig{}),
 			AutoPlan:                "off",
 			DesktopLayoutStyle:      "workbench",
@@ -810,10 +837,11 @@ func (a *App) Settings() SettingsView {
 			StatusBarItems:          config.DefaultDesktopStatusBarItems(),
 			DefaultToolApprovalMode: "auto",
 			CheckUpdates:            true,
+			UpdateChannel:           "stable",
 			Telemetry:               true,
 			Metrics:                 true,
-			MemoryCompiler:          true,
 			ExpandThinking:          false,
+			ConversationWidth:       "standard",
 		}
 	}
 	ctrl := a.activeCtrl()
@@ -834,7 +862,7 @@ func (a *App) Settings() SettingsView {
 		PlannerModel:      cfg.Agent.PlannerModel,
 		SubagentModel:     cfg.Agent.SubagentModel,
 		SubagentEffort:    cfg.Agent.SubagentEffort,
-		AutoPlan:          desktopAutoPlanMode(cfg.Agent.AutoPlan),
+		AutoPlan:          "off", // deprecated JSON compatibility for older frontends
 		Providers:         []ProviderView{},
 		OfficialProviders: []ProviderView{},
 		ProviderPresets:   []ProviderPresetView{},
@@ -862,9 +890,20 @@ func (a *App) Settings() SettingsView {
 				Password: cfg.Network.Proxy.Password,
 			},
 		},
-		Agent:                   AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, PlannerMaxSteps: cfg.Agent.PlannerMaxSteps, MaxSubagentDepth: desktopMaxSubagentDepth(cfg.Agent.MaxSubagentDepth), SystemPrompt: cfg.Agent.SystemPrompt, ColdResumePrune: cfg.ColdResumePruneEnabled(), ReasoningLanguage: cfg.ReasoningLanguage()},
+		Agent: AgentView{
+			Temperature:            cfg.Agent.Temperature,
+			MaxSteps:               cfg.Agent.MaxSteps,
+			PlannerMaxSteps:        cfg.Agent.PlannerMaxSteps,
+			MaxSubagentDepth:       desktopMaxSubagentDepth(cfg.Agent.MaxSubagentDepth),
+			MaxSubagentConcurrency: desktopSubagentConcurrency(cfg.Agent.MaxSubagentConcurrency),
+			MaxParallelWriters:     desktopParallelWriters(cfg.Agent.MaxParallelWriters, cfg.Agent.MaxSubagentConcurrency),
+			SystemPrompt:           cfg.Agent.SystemPrompt,
+			ColdResumePrune:        cfg.ColdResumePruneEnabled(),
+			ReasoningLanguage:      cfg.ReasoningLanguage(),
+		},
 		Bot:                     botSettingsView(cfg.Bot),
 		DesktopLanguage:         cfg.DesktopLanguage(),
+		DesktopCurrency:         cfg.DesktopCurrency(),
 		DesktopLayoutStyle:      cfg.DesktopLayoutStyle(),
 		DesktopTheme:            cfg.DesktopTheme(),
 		DesktopThemeStyle:       cfg.DesktopThemeStyle(),
@@ -874,10 +913,11 @@ func (a *App) Settings() SettingsView {
 		StatusBarItems:          cfg.DesktopStatusBarItems(),
 		DefaultToolApprovalMode: cfg.DesktopDefaultToolApprovalMode(),
 		CheckUpdates:            cfg.DesktopCheckUpdates(),
+		UpdateChannel:           cfg.DesktopUpdateChannel(),
 		Telemetry:               cfg.DesktopTelemetry(),
 		Metrics:                 cfg.DesktopMetrics(),
-		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
 		ExpandThinking:          cfg.Desktop.ExpandThinking,
+		ConversationWidth:       cfg.DesktopConversationWidth(),
 		ConfigPath:              cfgPath,
 		ProviderKinds:           nonNil(provider.Kinds()),
 		AutoApproveTools:        ctrl != nil && ctrl.AutoApproveTools(),
@@ -885,7 +925,7 @@ func (a *App) Settings() SettingsView {
 	}
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
 	resolver := config.NewCredentialResolverForRoot(root)
-	v.OfficialProviders = officialProviderViewsForRootWithResolver(officialProviderAddedSet(cfg), cfg.DeepSeekOfficialPricingLanguage(), root, resolver)
+	v.OfficialProviders = officialProviderViewsForRootWithResolver(officialProviderAddedSet(cfg), a.desktopOfficialPricingLanguage(cfg), root, resolver)
 	v.ProviderPresets = providerPresetViewsForRootWithResolver(cfg, root, resolver)
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
@@ -1192,9 +1232,9 @@ func appendSettingsWarning(existing, warning string) string {
 	return existing + "\n" + warning
 }
 
-// loadDesktopUserConfigForEdit loads the user config for a write path and
-// persists any pending one-time legacy migrations (provider-access normalize,
-// legacy bot-config move) to disk as part of the load.
+// loadDesktopUserConfigForEdit loads the user config for a write path. Pending
+// legacy migrations are assembled in memory and reach disk through the locked
+// user-config save, never by rewriting a project file as a side effect.
 //
 // Contract: the caller must already hold config.LockUserConfigEdits() across
 // its whole load→mutate→SaveTo cycle, so the migration write-back cannot race
@@ -1204,32 +1244,43 @@ func appendSettingsWarning(existing, warning string) string {
 // callers must use loadDesktopUserConfigForView (or its WithCredentials
 // variant), which never writes to disk.
 func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
+	return a.loadDesktopUserConfigForEditForRoot(a.activeWorkspaceRoot())
+}
+
+func (a *App) loadDesktopUserConfigForEditForRoot(root string) (*config.Config, string, error) {
 	userPath := config.UserConfigPath()
 	if userPath == "" {
 		return nil, "", fmt.Errorf("cannot resolve user config directory")
 	}
 	if _, err := os.Stat(userPath); err == nil {
-		cfg := config.LoadForEdit(userPath)
+		cfg, err := config.LoadForEditReadOnlyStrict(userPath)
+		if err != nil {
+			return nil, "", err
+		}
 		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
 			return nil, "", err
 		}
-		if err := a.migrateLegacyBotConfigToUser(cfg, userPath); err != nil {
+		if err := a.migrateLegacyBotConfigToUserForRoot(root, cfg, userPath); err != nil {
 			return nil, "", err
 		}
 		return cfg, userPath, nil
 	}
-	cfg := config.LoadForEdit(userPath)
-	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+	cfg, err := config.LoadForEditReadOnlyStrict(userPath)
+	if err != nil {
+		return nil, "", err
+	}
+	legacyPath := config.SourcePathForRoot(root)
 	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
 		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
 			return nil, "", err
 		}
 		return cfg, userPath, nil
 	}
-	legacyCfg := config.LoadForEdit(legacyPath)
-	if err := normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath); err != nil {
+	legacyCfg, err := config.LoadForEditReadOnlyStrict(legacyPath)
+	if err != nil {
 		return nil, "", err
 	}
+	normalizeLegacyDesktopProviderAccessInMemory(legacyCfg, legacyPath)
 	legacyCfg.ConfigVersion = config.Default().ConfigVersion
 	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
 		return nil, "", err
@@ -1246,7 +1297,11 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 // loaded; callers that hand the config to a runtime resolving secrets from the
 // process env must use loadDesktopUserConfigForViewWithCredentials.
 func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
-	return a.loadDesktopUserConfigReadOnly(config.LoadForEditWithoutCredentials)
+	return a.loadDesktopUserConfigForViewForRoot(a.activeWorkspaceRoot())
+}
+
+func (a *App) loadDesktopUserConfigForViewForRoot(root string) (*config.Config, string, error) {
+	return a.loadDesktopUserConfigReadOnlyForRoot(root, config.LoadForEditWithoutCredentialsReadOnlyStrict)
 }
 
 // loadDesktopUserConfigForViewWithCredentials is loadDesktopUserConfigForView
@@ -1256,28 +1311,42 @@ func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
 // (app-secret/control-token envs) and MCP server connects. It still never
 // writes to disk.
 func (a *App) loadDesktopUserConfigForViewWithCredentials() (*config.Config, string, error) {
-	return a.loadDesktopUserConfigReadOnly(config.LoadForEdit)
+	return a.loadDesktopUserConfigForViewWithCredentialsForRoot(a.activeWorkspaceRoot())
 }
 
-// loadDesktopUserConfigReadOnly is the shared pure-read loader behind the View
-// variants: same shape as loadDesktopUserConfigForEdit, but every legacy
-// migration stays in memory (zero SaveTo).
-func (a *App) loadDesktopUserConfigReadOnly(load func(string) *config.Config) (*config.Config, string, error) {
+func (a *App) loadDesktopUserConfigForViewWithCredentialsForRoot(root string) (*config.Config, string, error) {
+	return a.loadDesktopUserConfigReadOnlyForRoot(root, config.LoadForEditReadOnlyStrict)
+}
+
+// loadDesktopUserConfigReadOnlyForRoot is the shared pure-read loader behind
+// the View variants: same shape as loadDesktopUserConfigForEdit, but every
+// legacy migration stays in memory (zero SaveTo) and resolves from root.
+func (a *App) loadDesktopUserConfigReadOnlyForRoot(root string, load func(string) (*config.Config, error)) (*config.Config, string, error) {
 	userPath := config.UserConfigPath()
 	if userPath == "" {
 		return nil, "", fmt.Errorf("cannot resolve user config directory")
 	}
 	if _, err := os.Stat(userPath); err == nil {
-		cfg := load(userPath)
+		cfg, err := load(userPath)
+		if err != nil {
+			return nil, "", err
+		}
 		normalizeLegacyDesktopProviderAccessInMemory(cfg, userPath)
-		legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+		legacyPath := config.SourcePathForRoot(root)
 		if legacyPath != "" && !sameConfigPath(legacyPath, userPath) {
-			mergeLegacyBotConfigInMemory(cfg, load(legacyPath))
+			legacyCfg, err := load(legacyPath)
+			if err != nil {
+				return nil, "", err
+			}
+			mergeLegacyBotConfigInMemory(cfg, legacyCfg)
 		}
 		return cfg, userPath, nil
 	}
-	cfg := load(userPath)
-	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+	cfg, err := load(userPath)
+	if err != nil {
+		return nil, "", err
+	}
+	legacyPath := config.SourcePathForRoot(root)
 	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
 		normalizeLegacyDesktopProviderAccessInMemory(cfg, userPath)
 		return cfg, userPath, nil
@@ -1285,24 +1354,30 @@ func (a *App) loadDesktopUserConfigReadOnly(load func(string) *config.Config) (*
 	// The user config does not exist yet: serve the legacy config as the view.
 	// It already carries any legacy bot config, so no merge is needed; the
 	// write path creates the migrated user file later.
-	legacyCfg := load(legacyPath)
+	legacyCfg, err := load(legacyPath)
+	if err != nil {
+		return nil, "", err
+	}
 	normalizeLegacyDesktopProviderAccessInMemory(legacyCfg, legacyPath)
 	legacyCfg.ConfigVersion = config.Default().ConfigVersion
 	return legacyCfg, userPath, nil
 }
 
-// migrateLegacyBotConfigToUser (method) is the write-path legacy bot-config
-// migration against the active workspace's legacy config file. Callers must
+// migrateLegacyBotConfigToUserForRoot is the write-path legacy bot-config
+// migration against an explicit workspace's legacy config file. Callers must
 // hold config.LockUserConfigEdits() (see loadDesktopUserConfigForEdit).
-func (a *App) migrateLegacyBotConfigToUser(userCfg *config.Config, userPath string) error {
+func (a *App) migrateLegacyBotConfigToUserForRoot(root string, userCfg *config.Config, userPath string) error {
 	if userCfg == nil {
 		return nil
 	}
-	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+	legacyPath := config.SourcePathForRoot(root)
 	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
 		return nil
 	}
-	legacyCfg := config.LoadForEdit(legacyPath)
+	legacyCfg, err := config.LoadForEditReadOnlyStrict(legacyPath)
+	if err != nil {
+		return err
+	}
 	return migrateLegacyBotConfigToUser(userCfg, legacyCfg, userPath)
 }
 
@@ -1466,13 +1541,6 @@ func providerCredentialSourceNotice(apiKeyEnv, value string) string {
 	return ""
 }
 
-func projectConfigPathForRoot(root string) string {
-	if strings.TrimSpace(root) == "" || root == "." {
-		return "reasonix.toml"
-	}
-	return filepath.Join(root, "reasonix.toml")
-}
-
 func sameConfigPath(a, b string) bool {
 	a = strings.TrimSpace(a)
 	b = strings.TrimSpace(b)
@@ -1502,8 +1570,10 @@ func (a *App) rebuildSetting(setting string) error {
 	// concurrent build+swap sequences on the same tab leak the first-swapped
 	// controller and double-close the old one.
 	a.runtimeRebuildMu.Lock()
-	defer a.runtimeRebuildMu.Unlock()
-	return a.rebuildSettingLocked(setting)
+	err := a.rebuildSettingLocked(setting)
+	a.runtimeRebuildMu.Unlock()
+	a.refreshWorkbenchProviderBrokerAsync()
+	return err
 }
 
 // rebuildSettingLocked is rebuildSetting's body; callers must already hold
@@ -1517,10 +1587,26 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	if tab == nil {
 		return fmt.Errorf("no active tab")
 	}
+	tab.turnStartMu.Lock()
+	defer tab.turnStartMu.Unlock()
+	return a.rebuildSettingTurnLocked(setting, tab, false)
+}
+
+// rebuildSettingTurnLocked is rebuildSettingLocked's body; callers must hold
+// runtimeRebuildMu and the passed tab's turnStartMu. admissionHeld is true for
+// MCP lifecycle callers that also hold runtimeAdmissionMu's write side.
+func (a *App) rebuildSettingTurnLocked(setting string, tab *WorkspaceTab, admissionHeld bool) error {
+	if a.ctx == nil {
+		return nil
+	}
 	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError(setting)
 	}
-	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+	ensureWorkspace := a.ensureTabControllerWorkspace
+	if admissionHeld {
+		ensureWorkspace = a.ensureTabControllerWorkspaceAdmissionHeld
+	}
+	if err := ensureWorkspace(tab); err != nil {
 		return err
 	}
 	prevPath := a.reconciledSessionPathForTab(tab)
@@ -1536,7 +1622,7 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError(setting)
 	}
-	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+	if err := ensureWorkspace(tab); err != nil {
 		return err
 	}
 
@@ -1556,6 +1642,7 @@ func (a *App) rebuildSettingLocked(setting string) error {
 		carried = oldCtrl.History()
 	}
 	snap := a.tabRuntimeSnapshot(tab)
+	runtime := snap.normalizedRuntime()
 	model := snap.model
 	if cfg, err := config.LoadForRoot(snap.workspaceRoot); err == nil {
 		if resolved, fallback, ok := cfg.ResolveModelWithFallback(model); ok {
@@ -1568,11 +1655,12 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	sharedHost := a.lookupSharedHost(snap.sharedHostKey)
 	ctrl, err := boot.Build(a.bootContext(), boot.Options{
 		Model: model, RequireKey: false,
+		AutoPricingCurrency:      a.desktopAutoPricingCurrency(),
 		Sink:                     snap.sink,
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           cloneStringPtr(snap.effort),
-		TokenMode:                snap.currentTokenMode(),
+		TokenMode:                runtime.tokenMode,
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
@@ -1583,7 +1671,12 @@ func (a *App) rebuildSettingLocked(setting string) error {
 			leaseHeld := false
 			a.mu.Lock()
 			leaseHeld = setTabStartupError(tab, err)
-			tab.Ready = true
+			tab.Ready = false
+			if leaseHeld {
+				a.setSessionRuntimePhaseLocked(tab, sessionRuntimeLeaseBlocked, err)
+			} else {
+				a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, err)
+			}
 			a.mu.Unlock()
 			if leaseHeld {
 				a.scheduleDeferredStartupBuild(tab.ID)
@@ -1593,25 +1686,17 @@ func (a *App) rebuildSettingLocked(setting string) error {
 		return err
 	}
 	a.bindControllerDisplayRecorder(ctrl)
-	ctrl.EnableInteractiveApproval()
-	applyTabModeToController(ctrl, snap.mode)
-	// applyTabModeToController only encodes plan+yolo from tab.mode.
-	// Apply the explicit toolApprovalMode (ask/auto/yolo) afterwards so
-	// "auto" is not lost — otherwise rebuild would silently downgrade
-	// auto to ask (#5424 regression).
-	if mode := strings.TrimSpace(snap.toolApprovalMode); mode != "" {
-		applyTabToolApprovalModeToController(ctrl, mode)
-	}
+	configureControllerRuntime(ctrl, oldCtrl, runtime)
 	path := agent.ContinueSessionPath(prevPath, ctrl.SessionDir(), ctrl.Label())
 	if err := a.ensureTabSessionLeaseForRebuild(tab, path, setting); err != nil {
 		ctrl.Close()
 		return err
 	}
-	resumeWithFreshSystemPrompt(ctrl, carried, path)
-	if oldCtrl != nil {
-		oldCtrl.Close()
+	restoredRuntime, err := resumeControllerRuntimeWithMessages(ctrl, carried, path, runtime)
+	if err != nil {
+		ctrl.Close()
+		return err
 	}
-	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
 	if current := a.tabs[tab.ID]; current != tab {
 		a.mu.Unlock()
@@ -1622,6 +1707,7 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	tab.Ctrl = ctrl
 	tab.model = model
 	tab.Label = ctrl.Label()
+	applyNormalizedRuntimeToTabLocked(tab, restoredRuntime)
 	clearTabStartupError(tab)
 	tab.Ready = true
 	// Supersede any in-flight startup build: it would otherwise finish later,
@@ -1629,7 +1715,15 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	if oldCtrl != nil {
+		oldCtrl.Close()
+	}
+	a.persistTabSessionPath(tab, path)
+	if setting == "currency" {
+		a.repriceTabUsageForCurrentCurrency(tab)
+	}
 	a.clearDeferredRebuild(tab.ID)
+	a.notifyTabRuntimeRebuilt(tab)
 	a.emitReady(a.ctx)
 	return nil
 }
@@ -1701,7 +1795,7 @@ func selectableDesktopModelRef(c *config.Config, ref string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unknown model %q", ref)
 	}
-	if !modelProviderAccessAllowed(providerAccessSet(c.Desktop.ProviderAccess), entry.Name) {
+	if !modelProviderAccessAllowed(c.Desktop.ProviderAccess, entry.Name) {
 		return "", fmt.Errorf("model %q is not available because provider %q is not added", ref, entry.Name)
 	}
 	if !entry.Configured() {
@@ -1834,42 +1928,41 @@ func (a *App) SetMaxSubagentDepth(depth int) error {
 	})
 }
 
-// SetAutoPlan updates the automatic plan-mode gate (off|on).
-func (a *App) SetAutoPlan(mode string) error {
-	if err := a.ensureLiveControllersRuntimeMutationAllowed("auto-plan"); err != nil {
-		return err
-	}
-	var cfg *config.Config
-	// Lock only the load-modify-save cycle; the live-controller fan-out and the
-	// optional rebuild below are slow and must not hold the config edit lock.
-	if err := func() error {
-		unlock := config.LockUserConfigEdits()
-		defer unlock()
-		loaded, path, err := a.loadDesktopUserConfigForEdit()
-		if err != nil {
-			return err
-		}
-		if err := loaded.SetAutoPlan(mode); err != nil {
-			return err
-		}
-		if err := loaded.SaveTo(path); err != nil {
-			return err
-		}
-		cfg = loaded
+func desktopSubagentConcurrency(n int) int {
+	total, _ := agent.NormalizeConcurrencyLimits(n, 0)
+	return total
+}
+
+func desktopParallelWriters(writers, total int) int {
+	_, w := agent.NormalizeConcurrencyLimits(total, writers)
+	return w
+}
+
+// SetMaxSubagentConcurrency sets the session-wide sub-agent concurrency cap (1–32).
+func (a *App) SetMaxSubagentConcurrency(n int) error {
+	return a.applyConfigChange(func(c *config.Config) error {
+		total, writers := agent.NormalizeConcurrencyLimits(n, c.Agent.MaxParallelWriters)
+		c.Agent.MaxSubagentConcurrency = total
+		c.Agent.MaxParallelWriters = writers
 		return nil
-	}(); err != nil {
-		return err
-	}
-	a.applyAutoPlanToLiveControllers(cfg.Agent.AutoPlan)
-	if desktopAutoPlanMode(cfg.Agent.AutoPlan) == "on" && strings.TrimSpace(cfg.Agent.AutoPlanClassifier) != "" {
-		if err := a.rebuild(); err != nil {
-			if _, ok := a.deferredRebuildWarning("auto-plan", err); ok {
-				return nil
-			}
-			return err
-		}
-	}
-	return nil
+	})
+}
+
+// SetMaxParallelWriters sets the concurrent writer cap (1–32, ≤ total concurrency).
+func (a *App) SetMaxParallelWriters(n int) error {
+	return a.applyConfigChange(func(c *config.Config) error {
+		total, writers := agent.NormalizeConcurrencyLimits(c.Agent.MaxSubagentConcurrency, n)
+		c.Agent.MaxSubagentConcurrency = total
+		c.Agent.MaxParallelWriters = writers
+		return nil
+	})
+}
+
+// SetAutoPlan is retained for older frontend bundles. Automatic plan mode is
+// retired, so "off" is an idempotent compatibility call and enabling it is
+// rejected without mutating user configuration or live controllers.
+func (a *App) SetAutoPlan(mode string) error {
+	return config.Default().SetAutoPlan(mode)
 }
 
 // SetDefaultToolApprovalMode updates the global Ask/Auto/YOLO default used only
@@ -1880,87 +1973,9 @@ func (a *App) SetDefaultToolApprovalMode(mode string) error {
 	})
 }
 
-// SetMemoryCompilerEnabled toggles the Memory v5 execution compiler.
-func (a *App) SetMemoryCompilerEnabled(enabled bool) error {
-	// Lock only the load-modify-save cycle; the live-controller fan-out below
-	// must not hold the config edit lock.
-	if err := func() error {
-		unlock := config.LockUserConfigEdits()
-		defer unlock()
-		cfg, path, err := a.loadDesktopUserConfigForEdit()
-		if err != nil {
-			return err
-		}
-		if err := cfg.SetMemoryCompilerEnabled(enabled); err != nil {
-			return err
-		}
-		return cfg.SaveTo(path)
-	}(); err != nil {
-		return err
-	}
-	a.applyMemoryCompilerToLiveControllers(enabled)
-	return nil
-}
-
-func (a *App) applyMemoryCompilerToLiveControllers(enabled bool) {
-	if a == nil {
-		return
-	}
-	var controllers []memoryCompilerTarget
-	a.mu.RLock()
-	for _, id := range a.orderedTabIDsLocked() {
-		tab := a.tabs[id]
-		if tab == nil || tab.Ctrl == nil {
-			continue
-		}
-		controllers = append(controllers, tab.Ctrl)
-	}
-	a.mu.RUnlock()
-	applyMemoryCompilerToControllers(enabled, controllers)
-}
-
-type memoryCompilerTarget interface {
-	SetMemoryCompilerEnabled(enabled bool)
-}
-
-func applyMemoryCompilerToControllers(enabled bool, controllers []memoryCompilerTarget) {
-	for _, ctrl := range controllers {
-		if ctrl != nil {
-			ctrl.SetMemoryCompilerEnabled(enabled)
-		}
-	}
-}
-
-func desktopAutoPlanMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "on", "ask":
-		return "on"
-	default:
-		return "off"
-	}
-}
-
-func (a *App) applyAutoPlanToLiveControllers(fallback string) {
-	type liveTab struct {
-		root string
-		ctrl control.SessionAPI
-	}
-	var tabs []liveTab
-	a.mu.RLock()
-	for _, tab := range a.tabs {
-		if tab != nil && tab.Ctrl != nil {
-			tabs = append(tabs, liveTab{root: tab.WorkspaceRoot, ctrl: tab.Ctrl})
-		}
-	}
-	a.mu.RUnlock()
-	for _, tab := range tabs {
-		mode := fallback
-		if cfg, err := config.LoadForRoot(tab.root); err == nil {
-			mode = cfg.Agent.AutoPlan
-		}
-		tab.ctrl.SetAutoPlan(mode)
-	}
-}
+// SetDefaultAutoRecoveryCheckpoint is retained as a no-op Wails surface for
+// older generated frontends. Auto Guard is always built into Auto.
+func (a *App) SetDefaultAutoRecoveryCheckpoint(_ bool) error { return nil }
 
 func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEntry, string, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
@@ -2315,7 +2330,11 @@ func (a *App) FetchProviderModels(p ProviderView) ([]string, error) {
 
 // DeleteProvider removes a provider and retargets open idle tabs that used it.
 func (a *App) DeleteProvider(name string) error {
-	return a.deleteProviderAndRetargetTabs(name)
+	err := a.deleteProviderAndRetargetTabs(name)
+	if err == nil {
+		a.refreshWorkbenchProviderBrokerAsync()
+	}
+	return err
 }
 
 // RemoveProviderAccess hides a provider from Settings > Model > Access and from
@@ -2323,7 +2342,12 @@ func (a *App) DeleteProvider(name string) error {
 // for back-compat, but visible defaults and idle tabs are retargeted away from
 // the removed access entry when another accessed provider is available. Custom
 // providers are deleted outright.
-func (a *App) RemoveProviderAccess(name string) error {
+func (a *App) RemoveProviderAccess(name string) (err error) {
+	defer func() {
+		if err == nil {
+			a.refreshWorkbenchProviderBrokerAsync()
+		}
+	}()
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("remove provider access: empty provider name")
@@ -2383,6 +2407,13 @@ func retargetProviderReferences(c *config.Config, name, fallbackRef string) {
 }
 
 func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
+	defer a.lockRuntimeMutation("remove-provider-access")()
+	releaseGates, err := a.lockRuntimeTurnGates("provider access", nil)
+	if err != nil {
+		return err
+	}
+	defer releaseGates()
+
 	// This first load is a read-only planning copy (fallback ref + affected-tab
 	// scan); it loads credentials because the fallback choice depends on which
 	// providers resolve a key. The saved edit below reloads under the config
@@ -2448,7 +2479,7 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 		return err
 	}
 	if len(affected) == 0 {
-		if err := a.rebuild(); err != nil {
+		if err := a.rebuildActiveSettingRuntimeMutationLocked("provider access"); err != nil {
 			if _, ok := a.deferredRebuildWarning("provider access", err); ok {
 				return nil
 			}
@@ -2463,6 +2494,7 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 	}
 
 	var rebuildTabs []*WorkspaceTab
+	var releasedHostKeys []string
 	a.mu.Lock()
 	for _, item := range affected {
 		tab := a.tabs[item.id]
@@ -2475,6 +2507,9 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 			continue
 		}
 		tab.Ctrl = nil
+		if key := takeTabSharedHostKey(tab); key != "" {
+			releasedHostKeys = append(releasedHostKeys, key)
+		}
 		// Supersede any in-flight startup build: it was planned against the
 		// removed provider and would otherwise finish later, pass its
 		// generation check, and reinstall a controller for it.
@@ -2484,11 +2519,19 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 		clearTabStartupError(tab)
 		tab.Ready = a.ctx == nil
 		if a.ctx != nil {
+			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeStarting, nil)
+		} else {
+			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, fmt.Errorf("desktop runtime is not started"))
+		}
+		if a.ctx != nil {
 			rebuildTabs = append(rebuildTabs, tab)
 		}
 	}
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	for _, key := range releasedHostKeys {
+		a.releaseSharedHost(key)
+	}
 
 	for _, tab := range rebuildTabs {
 		go a.buildTabController(tab)
@@ -2501,6 +2544,13 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	if name == "" {
 		return fmt.Errorf("remove provider: empty provider name")
 	}
+	defer a.lockRuntimeMutation("delete-provider")()
+	releaseGates, err := a.lockRuntimeTurnGates("provider", nil)
+	if err != nil {
+		return err
+	}
+	defer releaseGates()
+
 	// Read-only planning copy (with credentials — the fallback choice depends
 	// on which providers resolve a key); the saved edit below reloads under the
 	// config edit lock (see removeBuiltInProviderAccessAndRetargetTabs).
@@ -2567,7 +2617,7 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	}
 
 	if len(affected) == 0 {
-		if err := a.rebuild(); err != nil {
+		if err := a.rebuildActiveSettingRuntimeMutationLocked("provider"); err != nil {
 			if _, ok := a.deferredRebuildWarning("provider", err); ok {
 				return nil
 			}
@@ -2582,6 +2632,7 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	}
 
 	var rebuildTabs []*WorkspaceTab
+	var releasedHostKeys []string
 	a.mu.Lock()
 	for _, item := range affected {
 		tab := a.tabs[item.id]
@@ -2594,6 +2645,9 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 			continue
 		}
 		tab.Ctrl = nil
+		if key := takeTabSharedHostKey(tab); key != "" {
+			releasedHostKeys = append(releasedHostKeys, key)
+		}
 		// Supersede any in-flight startup build: it was planned against the
 		// removed provider and would otherwise finish later, pass its
 		// generation check, and reinstall a controller for it.
@@ -2603,16 +2657,37 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 		clearTabStartupError(tab)
 		tab.Ready = a.ctx == nil
 		if a.ctx != nil {
+			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeStarting, nil)
+		} else {
+			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, fmt.Errorf("desktop runtime is not started"))
+		}
+		if a.ctx != nil {
 			rebuildTabs = append(rebuildTabs, tab)
 		}
 	}
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	for _, key := range releasedHostKeys {
+		a.releaseSharedHost(key)
+	}
 
 	for _, tab := range rebuildTabs {
 		go a.buildTabController(tab)
 	}
 	return nil
+}
+
+// rebuildActiveSettingRuntimeMutationLocked refreshes the active controller
+// while lockRuntimeMutation and all runtime turn gates are held.
+func (a *App) rebuildActiveSettingRuntimeMutationLocked(setting string) error {
+	tab := a.activeTab()
+	if tab == nil {
+		if a.ctx == nil {
+			return nil
+		}
+		return fmt.Errorf("no active tab")
+	}
+	return a.rebuildSettingTurnLocked(setting, tab, true)
 }
 
 // SetProviderKey writes a secret to Reasonix's global .env under the given
@@ -2953,7 +3028,18 @@ func (a *App) SetStatusBarItems(items []string) error {
 // language preference used by model-facing desktop sessions.
 func (a *App) SetDesktopLanguage(lang string) error {
 	responseLanguage := ""
-	if err := a.applyConfigOnly(func(c *config.Config) error {
+	pricingChanged := false
+	if cfg, _, err := a.loadDesktopUserConfigForView(); err == nil && cfg.DesktopCurrency() == "" {
+		targetCurrency := a.desktopAutoPricingCurrency()
+		switch strings.ToLower(strings.TrimSpace(lang)) {
+		case "zh":
+			targetCurrency = "CNY"
+		case "en":
+			targetCurrency = "USD"
+		}
+		pricingChanged = a.desktopEffectivePricingCurrency(cfg) != targetCurrency
+	}
+	mutate := func(c *config.Config) error {
 		if err := c.SetDesktopLanguage(lang); err != nil {
 			return err
 		}
@@ -2962,21 +3048,113 @@ func (a *App) SetDesktopLanguage(lang string) error {
 		}
 		responseLanguage = c.ResponseLanguage()
 		return nil
-	}); err != nil {
+	}
+	var err error
+	if pricingChanged {
+		_, err = a.applyConfigChangeWithWarning("currency", mutate)
+	} else {
+		err = a.applyConfigOnly(mutate)
+	}
+	if err != nil {
 		return err
+	}
+	if pricingChanged {
+		a.scheduleCurrencyRefreshForOtherTabs()
+	}
+	if strings.TrimSpace(lang) != "" && !strings.EqualFold(strings.TrimSpace(lang), "auto") {
+		a.setDesktopLocale(lang)
 	}
 	a.updateTrayLocale(lang)
 	a.applyResponseLanguageToLiveControllers(responseLanguage)
 	return nil
 }
 
+// SetDesktopCurrency updates the official pricing region independently from UI
+// language. Rebuild the active controller so subsequent usage carries the new
+// currency and regional rates through the existing structured cost fields.
+func (a *App) SetDesktopCurrency(currency string) error {
+	_, err := a.applyConfigChangeWithWarning("currency", func(c *config.Config) error {
+		return c.SetDesktopCurrency(currency)
+	})
+	if err == nil {
+		a.scheduleCurrencyRefreshForOtherTabs()
+	}
+	return err
+}
+
+func (a *App) scheduleCurrencyRefreshForOtherTabs() {
+	if a == nil || a.ctx == nil {
+		return
+	}
+	a.mu.RLock()
+	activeID := a.activeTabID
+	tabIDs := make([]string, 0, len(a.tabs))
+	for id, tab := range a.tabs {
+		if id != activeID && tab != nil && tab.Ctrl != nil && !tab.removed {
+			tabIDs = append(tabIDs, id)
+		}
+	}
+	a.mu.RUnlock()
+	for _, id := range tabIDs {
+		a.scheduleDeferredRebuild(id, "currency")
+	}
+}
+
+func (a *App) scheduleCurrencyRefreshForAllTabs() {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	tabIDs := make([]string, 0, len(a.tabs))
+	for id, tab := range a.tabs {
+		if tab != nil && tab.Ctrl != nil && !tab.removed {
+			tabIDs = append(tabIDs, id)
+		}
+	}
+	a.mu.RUnlock()
+	for _, id := range tabIDs {
+		a.scheduleDeferredRebuild(id, "currency")
+	}
+}
+
+func (a *App) desktopPricingFollowsDetectedLocale() bool {
+	cfg, _, err := a.loadDesktopUserConfigForView()
+	return err == nil && cfg.DesktopPricingFollowsDetectedLocale()
+}
+
+func (a *App) desktopEffectivePricingCurrency(cfg *config.Config) string {
+	if cfg == nil {
+		return a.desktopAutoPricingCurrency()
+	}
+	if cfg.DesktopPricingFollowsDetectedLocale() {
+		return a.desktopAutoPricingCurrency()
+	}
+	return cfg.DeepSeekOfficialPricingCurrency()
+}
+
+func (a *App) desktopOfficialPricingLanguage(cfg *config.Config) string {
+	if a.desktopEffectivePricingCurrency(cfg) == "CNY" {
+		return "zh"
+	}
+	return "en"
+}
+
 // SetTrayLocale mirrors the resolved desktop UI language into the native tray
 // menu. It is runtime-only; the persisted preference remains [desktop].language.
 func (a *App) SetTrayLocale(locale string) error {
-	if locale != "zh" {
-		locale = "en"
+	previousCurrency := a.desktopAutoPricingCurrency()
+	a.setDesktopLocale(locale)
+	pricingCurrencyChanged := previousCurrency != a.desktopAutoPricingCurrency()
+	trayLocale := "en"
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "zh") {
+		trayLocale = "zh"
 	}
-	a.updateTrayLocale(locale)
+	a.updateTrayLocale(trayLocale)
+	if pricingCurrencyChanged && a.desktopPricingFollowsDetectedLocale() {
+		a.scheduleCurrencyRefreshForAllTabs()
+		a.kickDeferredRebuildRetry()
+	}
+	a.emitProjectTreeChanged()
 	return nil
 }
 
@@ -3011,6 +3189,12 @@ func (a *App) SetDesktopCheckUpdates(enabled bool) error {
 	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopCheckUpdates(enabled) })
 }
 
+// SetDesktopUpdateChannel changes the rolling update pointer used by startup
+// and manual checks. Legacy canary values are normalized to preview.
+func (a *App) SetDesktopUpdateChannel(channel string) error {
+	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopUpdateChannel(channel) })
+}
+
 // SetDesktopTelemetry sets whether the desktop sends the anonymous launch ping.
 func (a *App) SetDesktopTelemetry(enabled bool) error {
 	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopTelemetry(enabled) })
@@ -3040,6 +3224,12 @@ func (a *App) SetExpandThinking(on bool) error {
 	return a.applyConfigOnly(func(c *config.Config) error { return c.SetExpandThinking(on) })
 }
 
+// SetDesktopConversationWidth sets the max transcript width preference.
+// standard = 960px fixed; full = 90% of the parent, with a 960px floor. Pure config-only.
+func (a *App) SetDesktopConversationWidth(width string) error {
+	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopConversationWidth(width) })
+}
+
 // MigrateDesktopPreferences imports old browser-local desktop preferences into
 // the user config once. Existing [desktop] values win so stale localStorage never
 // overwrites an explicit config edit.
@@ -3059,13 +3249,14 @@ func (a *App) MigrateDesktopPreferences(language, theme, style string) error {
 	})
 }
 
-// SetAgentParams updates sampling temperature, optional step guards, and the
-// base system prompt.
+// SetAgentParams updates sampling temperature and the base system prompt. The
+// step arguments remain in the Wails contract for older frontends, but are
+// retired and deliberately normalized to automatic execution.
 func (a *App) SetAgentParams(temperature float64, maxSteps int, plannerMaxSteps int, systemPrompt string) error {
 	return a.applyConfigChange(func(c *config.Config) error {
 		c.Agent.Temperature = temperature
-		c.Agent.MaxSteps = maxSteps
-		c.Agent.PlannerMaxSteps = plannerMaxSteps
+		c.Agent.MaxSteps = 0
+		c.Agent.PlannerMaxSteps = 0
 		c.Agent.SystemPrompt = systemPrompt
 		return nil
 	})

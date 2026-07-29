@@ -222,7 +222,13 @@ Reasonix plugins can declare `reasonix-plugin.json` at the plugin root:
     "SessionStart": [
       {
         "command": "hooks/session-start",
+        "args": [],
         "description": "Load startup context"
+      },
+      {
+        "command": "printf 'ready' && ./hooks/audit",
+        "shell": "bash",
+        "description": "Run a compound shell script"
       }
     ]
   },
@@ -237,21 +243,42 @@ Reasonix plugins can declare `reasonix-plugin.json` at the plugin root:
 Relative paths are resolved inside the plugin root. Reasonix does not run
 third-party install scripts during plugin installation.
 
+Plugin hook execution is explicit:
+
+- When `args` is present, including `"args": []`, the hook uses **exec form**.
+  `command` is the executable and every argument is passed literally, without
+  shell parsing or interpolation.
+- When `args` is absent and `shell` is present, the hook uses **shell form**.
+  The complete `command` is handed unchanged to `bash`, `powershell`/`pwsh`,
+  `cmd` (Windows only), or `auto`. On Windows, `auto` prefers Git Bash and
+  falls back to PowerShell.
+- Existing native hooks that declare neither field keep the historical
+  Reasonix shell-command behavior. `shellCommand: true` remains supported as
+  the legacy spelling of shell form.
+
 ## Codex & Claude Compatibility
 
 Reasonix also reads Codex plugin manifests at `.codex-plugin/plugin.json` and
-Claude plugin manifests at `.claude-plugin/plugin.json`. Claude plugin
-capabilities Reasonix does not map yet (`agents/`,
-`hooks/hooks.json`, `.mcp.json`) surface as install warnings instead of being
-silently dropped. GitHub-hosted multi-plugin marketplaces with a
+Claude plugin manifests at `.claude-plugin/plugin.json`. The install preview
+reports `full`, `partial`, or `none` compatibility, lists mapped capabilities,
+and identifies every skipped entry. A non-native package with no mapped
+capabilities is blocked instead of being recorded as an unusable installation.
+`full` means every declared capability in the manifest parsed and mapped to a
+Reasonix construct; it does not by itself guarantee every runtime decision an
+imported hook can make is honored. `PreToolUse`/`PermissionRequest` "deny" and
+`PermissionRequest` "allow" are implemented, but a hook's `updatedInput` or
+`PreToolUse`'s `ask`/`defer` decisions are chosen by the script's stdout at
+call time, not by anything in the manifest, so they can't be flagged during
+install; see the hook bullet below for what's implemented.
+GitHub-hosted multi-plugin marketplaces with a
 `.claude-plugin/marketplace.json` can be installed from the repository root
 when their plugin entries use relative string sources such as
 `./plugins/example` or `plugins/example`; preview shows one action per plugin
 before anything is written. Set the optional install name to a marketplace
-plugin name to select only that entry. External/object, npm, `strict: false`,
-and other advanced marketplace source protocols are not implemented yet:
-those entries are skipped with a warning during a full-marketplace install,
-and reported as an error when one of them is selected by name. For packages
+plugin name to select only that entry. Object sources are accepted only for a
+GitHub repository URL pinned to a full commit SHA. Unpinned external strings,
+npm, `strict: false`, and other advanced marketplace protocols are skipped in
+a bulk install and rejected when selected by name. For packages
 such as Superpowers and Claude-style skill packs, Reasonix maps:
 
 - `skills` to Reasonix skill roots. A Claude manifest that declares no
@@ -274,13 +301,92 @@ such as Superpowers and Claude-style skill packs, Reasonix maps:
   explicit custom command can also occupy the qualified name; desktop plugin
   details report that conflict. Native `reasonix-plugin.json` manifests can
   declare the same thing explicitly with a `"commands"` path list.
+- `agents/*.md` to manually invoked, plugin-owned subagent profiles. Claude
+  model aliases inherit the active Reasonix model; inline `tools` lists map to
+  Reasonix tool names, including wildcard MCP names such as `mcp__*__search`.
+  Agents use `/<plugin>:agent:<name>`, so an upstream agent and skill may share
+  the same name without shadowing one another.
 - `hooks/session-start-codex` to the Reasonix `SessionStart` hook when present.
 - A plugin-root `CLAUDE.md` file to a built-in `SessionStart` context hook. The
   file is read directly by Reasonix, without spawning a shell command.
-- `.claude/settings.json` command hooks to Reasonix hook events when the event
-  names match. Claude's `matcher` field maps to Reasonix `match`; hook commands
-  run as shell commands with the plugin root as `cwd`; Claude `timeout` values
-  are interpreted as seconds.
+- `.claude/settings.json` and `hooks/hooks.json` command hooks to Reasonix hook
+  events when the event names match. `matcher`, `args`, `shell`, `async`,
+  `env`, and timeout are preserved. Claude's execution contract is retained:
+  an `args` field (even an empty array) selects exec form and preserves every
+  argument literally; omitting `args` selects shell form and passes the raw
+  command to the declared Bash or PowerShell interpreter. `matcher` and the
+  `tool_name` a hook script sees are
+  translated between Reasonix's own tool names and Claude's (`bash` ↔
+  `Bash`, `write_file` ↔ `Write`, ...), so a matcher like `"Bash"` fires
+  correctly; every Reasonix subagent-spawning tool (`task`, `read_only_task`,
+  `parallel_tasks`, and the dedicated `explore`/`research`/`review`/
+  `security_review` wrappers) maps to Claude's single `Agent` tool, and a
+  matcher can still use the legacy `Task` name. Every mapped `Agent` payload
+  includes Claude's required `prompt` and `description`; Reasonix supplies a
+  stable operation label when its tool call omitted the optional description.
+  `tool_input` keys that
+  Reasonix names differently from Claude are renamed too — `path` becomes
+  `file_path` for `Read`/`Write`/`Edit`/`MultiEdit` and `notebook_path` for
+  `NotebookEdit`, `name`/`arguments` become `skill`/`args` for `Skill`,
+  `job_id` becomes `task_id` for the current `TaskOutput`/`TaskStop`, the
+  dedicated subagent wrappers' `task` becomes `Agent`'s `prompt`, and
+  `parallel_tasks` synthesizes `Agent`'s `prompt` from its sub-task prompts
+  (keeping `tasks` alongside) — so a guard reading `.tool_input.file_path`
+  or `.tool_input.prompt` sees the target instead of failing open on an
+  empty value. Legacy `BashOutput`/`KillShell` matchers still fire while the
+  emitted names and fields use current Claude vocabulary. `bash_output`
+  supplies `TaskOutput`'s required non-blocking fields; `wait` also maps to
+  `TaskOutput`, including `task_id` when it waits for exactly one job, and
+  omits `TaskOutput`'s optional `timeout` for an unbounded wait rather than
+  claiming a `0`ms budget.
+  `AskUserQuestion` supplies omitted `multiSelect:false` and empty option
+  descriptions, while `TodoWrite` derives an omitted `activeForm` from the
+  task content. `NotebookEdit` also supplies `new_source` from Reasonix's
+  accepted aliases, or an empty string for delete/empty-cell operations.
+  Relative `file_path`/`notebook_path` values are resolved
+  absolute against the payload `cwd`, matching Claude's file-tool contract,
+  so prefix-matching guards inspect the path the tool actually accesses. A
+  `Bash` `tool_response` is delivered in Claude's `{stdout, stderr,
+  interrupted}` shape (Reasonix combines both streams into `stdout`; the
+  failure error text becomes `stderr`), which the official security-guidance
+  plugin's commit/push checks read; other tools' responses pass through as
+  the raw result. Imported hooks receive Claude-compatible snake_case stdin
+  payloads, including `hook_event_name`. Before process launch, the host
+  expands `${CLAUDE_PLUGIN_ROOT}` and `${REASONIX_PLUGIN_ROOT}` (plus their
+  unbraced `$NAME` and Windows `%NAME%` spellings), so plugin-relative paths
+  do not depend on the target shell's environment-variable syntax. On Windows,
+  shell-form hooks without an explicit shell use the same Git Bash-first,
+  PowerShell-fallback selection as Reasonix's shell tool. Explicit Bash hooks
+  and legacy bare `sh -c`/`bash -c` hooks are routed through a discovered Git
+  for Windows Bash even when it is not on `cmd.exe`'s `PATH`; an explicit
+  interpreter path remains untouched. If no usable Bash is installed, the hook
+  reports a clear prerequisite error instead of the localized `sh is not
+  recognized` output. A non-standard or portable Bash configured with
+  `[tools.shell] prefer = "bash"` and `path = ".../bash.exe"` is reused by
+  explicit Bash hooks. `reasonix plugin doctor <name>` and
+  `reasonix doctor capabilities` report a missing required shell before the
+  first hook invocation. Captured legacy-code-page output is normalized to
+  UTF-8 before it reaches the UI. A `PreToolUse` or
+  `UserPromptSubmit` hook can still deny via exit code 2 or its JSON deny
+  shape on exit 0 (`hookSpecificOutput.permissionDecision` for `PreToolUse`,
+  top-level `decision:"block"` for `UserPromptSubmit`); an imported
+  `PermissionRequest` hook additionally answers the permission dialog itself
+  (deny or auto-allow, rather than only notifying) via exit code 2 or
+  `hookSpecificOutput.decision.behavior`, matching Claude's own contract.
+  `updatedInput` is not yet applied to the tool call, and a hook's `if`
+  condition or `asyncRewake` field is not evaluated. A package reports partial
+  compatibility with a structured warning when it declares either field, a
+  `Stop`/`SubagentStop` hook (which cannot block the turn in Reasonix), or a
+  matcher that covers one of three inputs Reasonix cannot losslessly express:
+  `WebFetch.prompt`, `NotebookEdit.cell_id` for a Reasonix `cell_number` call,
+  or `TaskOutput.task_id` when Reasonix `wait` covers multiple/all jobs. Each
+  structural gap is reported once per hooks file, so a wildcard-matcher
+  plugin sees one warning per gap instead of one per hook.
+- A plugin-root `.mcp.json` to installed MCP entries. Claude `local` maps to
+  stdio, non-ASCII display names receive stable internal IDs, and duplicate
+  declarations are deduplicated. Imported servers default to
+  `auto_start=false`; users connect them on demand so startup does not change
+  the provider-visible tool schema.
 
 Unsupported Claude hook item types are skipped with a warning. Reasonix does not
 run third-party install scripts.
@@ -293,6 +399,7 @@ Plugin hooks receive these environment variables:
 - `REASONIX_HOME`
 - `REASONIX_WORKSPACE_ROOT`
 - `CLAUDE_PROJECT_DIR`
+- `CLAUDE_PLUGIN_ROOT`
 
 ## Desktop Backend Methods
 

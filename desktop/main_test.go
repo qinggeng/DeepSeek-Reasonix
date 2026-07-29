@@ -9,6 +9,15 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
+func TestParseDesktopLaunchArgsSafeMode(t *testing.T) {
+	if !parseDesktopLaunchArgs([]string{"--safe-mode"}).SafeMode {
+		t.Fatal("--safe-mode was not recognized")
+	}
+	if parseDesktopLaunchArgs([]string{"--other"}).SafeMode {
+		t.Fatal("unrelated argument enabled safe mode")
+	}
+}
+
 // TestMain isolates user config/state/cache dirs for the whole package. Without
 // this, tests that persist desktop state, sessions, cache, or CLI-style config
 // can leak into the developer's real Reasonix directories.
@@ -49,7 +58,8 @@ func TestWindowsWebview2GPUDisabled(t *testing.T) {
 		want    bool
 	}{
 		{name: "stable default keeps gpu", channel: "stable", want: false},
-		{name: "canary default disables gpu", channel: "canary", want: true},
+		{name: "preview default disables gpu", channel: "preview", want: true},
+		{name: "legacy canary default disables gpu", channel: "canary", want: true},
 		{name: "env enables fallback", channel: "stable", env: "1", want: true},
 		{name: "env disables canary fallback", channel: "canary", env: "0", want: false},
 		{name: "truthy env", channel: "stable", env: "yes", want: true},

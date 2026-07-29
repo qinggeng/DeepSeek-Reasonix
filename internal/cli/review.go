@@ -38,15 +38,20 @@ func reviewCommand(args []string) int {
 		return 0
 	}
 
-	// 2. Load config and resolve model.
+	// 2. Load config and resolve model. resolveModelForCLI transparently
+	// falls through a keyless default to the next configured provider
+	// (issue #6996), so a user whose default_model no longer has a key
+	// (e.g. they migrated providers) does not have to add --model to
+	// every `reasonix review` invocation.
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: failed to load config:", err)
 		return 1
 	}
-	modelName := *model
-	if modelName == "" {
-		modelName = cfg.DefaultModel
+	modelName, _, err := resolveModelForCLI(*model, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
 	}
 	entry, ok := cfg.ResolveModel(modelName)
 	if !ok {
@@ -91,7 +96,7 @@ func reviewCommand(args []string) int {
 	// through TaskTool.subagentOptions / boot's subagentSkillOptions. If a new
 	// Options field becomes load-bearing for sub-agents, decide explicitly
 	// whether this path needs it too.
-	result, err := agent.RunSubAgentWithSession(ctx, prov, reg, agent.NewSession(reviewSk.Body), task, agent.Options{
+	result, err := agent.RunReadOnlySubAgentWithSession(ctx, prov, reg, agent.NewSession(reviewSk.Body), task, agent.Options{
 		MaxSteps:      12,
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       entry.Price,
@@ -123,7 +128,7 @@ func buildReviewSubagentRegistry(reviewSk skill.Skill, cfg *config.Config, root 
 	// [sandbox] config, so `reasonix review` previously read forbid_read
 	// paths a normal session would refuse.
 	writeRoots := cfg.WriteRootsForRoot(root)
-	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
+	forbidReadRoots := boot.RuntimeForbidReadRoots(cfg, root)
 	guard := builtin.NewSessionDataGuard(config.MemoryUserDir(), cfg.AllowWriteRoots())
 	bashSpec := sandbox.Spec{
 		Mode:            cfg.BashMode(),
@@ -143,7 +148,8 @@ func buildReviewSubagentRegistry(reviewSk skill.Skill, cfg *config.Config, root 
 	if reviewSk.ReadOnly {
 		// The built-in review skill declares read-only; enforce it here exactly
 		// like the in-session runner does (writer tools stripped, bash under the
-		// plan-mode safe policy) so `reasonix review` is not a writable backdoor.
+		// permission-classified read-only policy) so `reasonix review` is not a
+		// writable backdoor.
 		return agent.ReadOnlySubagentToolRegistry(parentReg, reviewSk.AllowedTools)
 	}
 	return agent.SubagentToolRegistry(parentReg, reviewSk.AllowedTools)

@@ -82,7 +82,7 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 	}
 	return boot.Build(ctx, boot.Options{
 		Model:                    firstNonEmpty(p.Model, f.model),
-		TokenMode:                f.profile,
+		TokenMode:                firstNonEmpty(p.RuntimeProfile, f.profile),
 		RequireKey:               true,
 		Sink:                     p.Sink,
 		EffortOverride:           p.EffortOverride,
@@ -113,7 +113,17 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		return acp.SessionConfigState{}, err
 	}
 
-	ref := firstNonEmpty(p.Model, f.model, cfg.DefaultModel)
+	// explicit wins over the configured default: p.Model is the session
+	// override requested by the ACP client, f.model is the factory-level
+	// override. Either being non-empty is an explicit choice that the
+	// helper treats as strict (no silent fallback). Only when both are
+	// empty do we let resolveModelForCLI apply the keyless-default
+	// fallback to the next configured provider (issue #6996).
+	explicit := firstNonEmpty(p.Model, f.model)
+	ref, _, err := resolveModelForCLI(explicit, cfg)
+	if err != nil {
+		return acp.SessionConfigState{}, err
+	}
 	if strings.TrimSpace(ref) == "" {
 		return acp.SessionConfigState{}, fmt.Errorf("no default_model configured")
 	}
@@ -158,6 +168,7 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		}
 	}
 
+	runtimeProfile := acpRuntimeProfile(firstNonEmpty(p.RuntimeProfile, f.profile))
 	options := []acp.SessionConfigOption{{
 		ID:           "model",
 		Name:         "Model",
@@ -185,16 +196,40 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		cleared := ""
 		effortOverride = &cleared
 	}
+	options = append(options, acp.SessionConfigOption{
+		ID:           "work_mode",
+		Name:         "Work Mode",
+		Category:     "work_mode",
+		Type:         "select",
+		CurrentValue: runtimeProfile,
+		Options: []acp.SessionConfigSelectOption{
+			{Value: "economy", Name: "Economy", Description: "Use a lean initial tool surface to save tokens"},
+			{Value: "balanced", Name: "Balanced", Description: "Use the complete default tool surface"},
+			{Value: "delivery", Name: "Delivery", Description: "Require acceptance criteria, review, and verification evidence"},
+		},
+	})
 
 	return acp.SessionConfigState{
 		Model:          currentModel,
 		EffortOverride: effortOverride,
+		RuntimeProfile: runtimeProfile,
 		Models: &acp.SessionModelState{
 			AvailableModels: modelInfos,
 			CurrentModelID:  currentModel,
 		},
 		ConfigOptions: options,
 	}, nil
+}
+
+func acpRuntimeProfile(value string) string {
+	switch boot.NormalizeTokenMode(value) {
+	case boot.TokenModeEconomy:
+		return "economy"
+	case boot.TokenModeDelivery:
+		return "delivery"
+	default:
+		return "balanced"
+	}
 }
 
 func acpBuiltinTools(cfg *config.Config, cwd string, writeRoots []string) []tool.Tool {

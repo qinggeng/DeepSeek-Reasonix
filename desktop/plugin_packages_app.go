@@ -9,28 +9,34 @@ import (
 
 	"reasonix/internal/command"
 	"reasonix/internal/config"
+	"reasonix/internal/hook"
 	"reasonix/internal/installsource"
 	"reasonix/internal/pluginpkg"
 )
 
 type PluginView struct {
-	Name             string                `json:"name"`
-	Version          string                `json:"version,omitempty"`
-	Description      string                `json:"description,omitempty"`
-	Source           string                `json:"source,omitempty"`
-	Root             string                `json:"root"`
-	ManifestKind     string                `json:"manifestKind,omitempty"`
-	Enabled          bool                  `json:"enabled"`
-	Skills           int                   `json:"skills"`
-	Commands         int                   `json:"commands"`
-	Hooks            int                   `json:"hooks"`
-	MCPServers       int                   `json:"mcpServers"`
-	SkillDetails     []PluginSkillView     `json:"skillDetails,omitempty"`
-	CommandDetails   []PluginCommandView   `json:"commandDetails,omitempty"`
-	HookDetails      []PluginHookView      `json:"hookDetails,omitempty"`
-	MCPServerDetails []PluginMCPServerView `json:"mcpServerDetails,omitempty"`
-	Warnings         []string              `json:"warnings,omitempty"`
-	Error            string                `json:"error,omitempty"`
+	Name                string                         `json:"name"`
+	Version             string                         `json:"version,omitempty"`
+	Description         string                         `json:"description,omitempty"`
+	Source              string                         `json:"source,omitempty"`
+	Root                string                         `json:"root"`
+	ManifestKind        string                         `json:"manifestKind,omitempty"`
+	Enabled             bool                           `json:"enabled"`
+	Skills              int                            `json:"skills"`
+	Commands            int                            `json:"commands"`
+	Hooks               int                            `json:"hooks"`
+	MCPServers          int                            `json:"mcpServers"`
+	Agents              int                            `json:"agents,omitempty"`
+	Compatibility       string                         `json:"compatibility,omitempty"`
+	MappedCapabilities  []string                       `json:"mappedCapabilities,omitempty"`
+	SkippedCapabilities []pluginpkg.CompatibilityIssue `json:"skippedCapabilities,omitempty"`
+	SkillDetails        []PluginSkillView              `json:"skillDetails,omitempty"`
+	AgentDetails        []PluginAgentView              `json:"agentDetails,omitempty"`
+	CommandDetails      []PluginCommandView            `json:"commandDetails,omitempty"`
+	HookDetails         []PluginHookView               `json:"hookDetails,omitempty"`
+	MCPServerDetails    []PluginMCPServerView          `json:"mcpServerDetails,omitempty"`
+	Warnings            []string                       `json:"warnings,omitempty"`
+	Error               string                         `json:"error,omitempty"`
 }
 
 type PluginInstallOptions struct {
@@ -46,6 +52,15 @@ type PluginSkillView struct {
 	Path        string `json:"path,omitempty"`
 	Invocation  string `json:"invocation,omitempty"`
 	RunAs       string `json:"runAs,omitempty"`
+}
+
+type PluginAgentView struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	Path         string   `json:"path,omitempty"`
+	Invocation   string   `json:"invocation,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	AllowedTools []string `json:"allowedTools,omitempty"`
 }
 
 type PluginCommandView struct {
@@ -67,10 +82,13 @@ type PluginHookView struct {
 }
 
 type PluginMCPServerView struct {
-	Name      string `json:"name"`
-	Transport string `json:"transport,omitempty"`
-	Command   string `json:"command,omitempty"`
-	URL       string `json:"url,omitempty"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
+	Description string `json:"description,omitempty"`
+	Transport   string `json:"transport,omitempty"`
+	Command     string `json:"command,omitempty"`
+	URL         string `json:"url,omitempty"`
+	AutoStart   bool   `json:"autoStart,omitempty"`
 }
 
 func (a *App) Plugins() []PluginView {
@@ -129,6 +147,10 @@ func decoratePluginCommandConflicts(view *PluginView, commands []command.Command
 
 func applyPluginPackageDetails(view *PluginView, pkg pluginpkg.Package, warnings []string) {
 	view.Skills, view.Commands, view.Hooks, view.MCPServers = pkg.CapabilityCounts()
+	view.Agents = pkg.AgentCount()
+	view.Compatibility = pkg.Compatibility.Status
+	view.MappedCapabilities = append([]string(nil), pkg.Compatibility.Mapped...)
+	view.SkippedCapabilities = append([]pluginpkg.CompatibilityIssue(nil), pkg.Compatibility.Skipped...)
 	view.Warnings = warnings
 	inv := pkg.Inventory()
 	view.CommandDetails = make([]PluginCommandView, 0, len(inv.Commands))
@@ -151,6 +173,14 @@ func applyPluginPackageDetails(view *PluginView, pkg pluginpkg.Package, warnings
 			RunAs:       sk.RunAs,
 		})
 	}
+	view.AgentDetails = make([]PluginAgentView, 0, len(inv.Agents))
+	for _, agent := range inv.Agents {
+		view.AgentDetails = append(view.AgentDetails, PluginAgentView{
+			Name: agent.Name, Description: agent.Description, Path: agent.Path,
+			Invocation: "/" + view.Name + ":agent:" + agent.Name, Model: agent.Model,
+			AllowedTools: append([]string(nil), agent.AllowedTools...),
+		})
+	}
 	view.HookDetails = make([]PluginHookView, 0, len(inv.Hooks))
 	for _, hook := range inv.Hooks {
 		view.HookDetails = append(view.HookDetails, PluginHookView{
@@ -164,10 +194,8 @@ func applyPluginPackageDetails(view *PluginView, pkg pluginpkg.Package, warnings
 	view.MCPServerDetails = make([]PluginMCPServerView, 0, len(inv.MCPServers))
 	for _, server := range inv.MCPServers {
 		view.MCPServerDetails = append(view.MCPServerDetails, PluginMCPServerView{
-			Name:      server.Name,
-			Transport: server.Transport,
-			Command:   server.Command,
-			URL:       server.URL,
+			Name: server.Name, DisplayName: server.DisplayName, Description: server.Description,
+			Transport: server.Transport, Command: server.Command, URL: server.URL, AutoStart: server.AutoStart,
 		})
 	}
 }
@@ -199,22 +227,39 @@ func (a *App) RemovePlugin(name string) error {
 	if err := a.ensureActiveTabRebuildAllowed("plugins"); err != nil {
 		return err
 	}
+	// Uninstall disconnects the plugin's MCP servers, so the whole flow holds
+	// the MCP lifecycle lock: an unlocked disconnect can interleave with a
+	// launch-authorization preflight, which would then relaunch the just-removed server from
+	// its stale snapshot.
+	defer a.lockMCPMutation("remove-plugin")()
+	// A global uninstall touches every runtime, so gate every visible and
+	// detached tab — not only the active one — and hold the gates through the
+	// uninstall and rebuild. The re-check runs under the gates because the
+	// lifecycle-lock wait can outlast the pre-lock check: work that started
+	// mid-wait must fail the removal before anything is deleted, and no tab
+	// may start a turn against a half-removed plugin.
+	releaseGates, err := a.lockRuntimeTurnGates("plugins", nil)
+	if err != nil {
+		return err
+	}
+	defer releaseGates()
+	tab := a.activeTab()
+	if tab == nil && a.ctx != nil {
+		return fmt.Errorf("no active tab")
+	}
 	raw, _ := json.Marshal(map[string]any{"op": "uninstall", "kind": "plugin", "name": strings.TrimSpace(name), "scope": "global"})
 	tl := installsource.NewTool(installsource.Options{
-		ProjectRoot: a.activeWorkspaceRoot(),
-		OnDisconnect: func(serverName string) bool {
-			tab := a.activeTab()
-			if tab == nil || tab.Ctrl == nil {
-				return false
-			}
-			return tab.Ctrl.DisconnectMCPServer(serverName)
-		},
+		ProjectRoot:  a.activeWorkspaceRoot(),
+		OnDisconnect: a.disconnectMCPServerAllRuntimes,
 	})
 	if _, err := tl.Execute(context.Background(), raw); err != nil {
 		return err
 	}
 	a.invalidateSkillRootsCache()
-	if err := a.rebuild(); err != nil {
+	if tab == nil || a.ctx == nil {
+		return nil
+	}
+	if err := a.rebuildSettingTurnLocked("plugins", tab, true); err != nil {
 		if _, ok := a.deferredRebuildWarning("plugins", err); ok {
 			return nil
 		}
@@ -269,6 +314,22 @@ func (a *App) PluginDoctor(name string) PluginView {
 		if _, err := os.Stat(p.Root); err != nil {
 			p.Error = err.Error()
 			return p
+		}
+		pkg, _, err := pluginpkg.ParseDir(p.Root)
+		if err != nil {
+			p.Error = err.Error()
+			return p
+		}
+		cfg, _ := config.LoadForRootReadOnly(a.activeWorkspaceRoot())
+		runtimeOptions := hook.RuntimeOptions{}
+		if cfg != nil {
+			runtimeOptions = hook.RuntimeOptionsForShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path)
+		}
+		for _, issue := range hook.CheckPackageRuntime(pkg, runtimeOptions) {
+			p.Warnings = append(p.Warnings, fmt.Sprintf(
+				"%s hook is unavailable: %v; install Git for Windows or configure a usable Bash path",
+				issue.Event, issue.Err,
+			))
 		}
 		return p
 	}

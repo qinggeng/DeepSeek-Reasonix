@@ -1,5 +1,5 @@
-import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Item, LiveStream } from "../lib/useController";
+import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
 import { useT } from "../lib/i18n";
@@ -12,7 +12,7 @@ import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup, isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "./ToolGroup";
 import { getDisplayMode, onDisplayModeChange, type DisplayMode } from "../lib/displayMode";
 import { getProcessFoldPreference, onProcessFoldPreferenceChange, type ProcessFoldPreference } from "../lib/processFoldPreference";
-import { STEER_NOTICE_PREFIX, isReadOnlyTool, isSteerNoticeText } from "../lib/useController";
+import { STEER_NOTICE_PREFIX, isSteerNoticeText } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
@@ -262,10 +262,12 @@ function partitionTurnItems(
 
 export function Transcript({
   items,
-  live,
+  live: liveProp,
+  liveStore,
   tabId,
   footerHeight = 0,
   onPrompt,
+  onDeliveryContinue,
   onEditPrompt,
   onRewind,
   checkpoints = [],
@@ -288,9 +290,11 @@ export function Transcript({
 }: {
   items: Item[];
   live?: LiveStream;
+  liveStore?: ControllerLiveStore;
   tabId?: string;
   footerHeight?: number;
   onPrompt: (text: string) => void;
+  onDeliveryContinue?: () => void;
   onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onRewind?: (turn: number, scope: string) => void;
   checkpoints?: CheckpointMeta[];
@@ -312,6 +316,15 @@ export function Transcript({
   invocationMetadata?: InvocationMetadataMap;
 }) {
   const t = useT();
+  const subscribeLive = useCallback(
+    (listener: () => void) => liveStore?.subscribe(tabId, listener) ?? (() => {}),
+    [liveStore, tabId],
+  );
+  const getLiveSnapshot = useCallback(
+    () => liveStore?.getSnapshot(tabId) ?? liveProp,
+    [liveProp, liveStore, tabId],
+  );
+  const live = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot);
   const {
     scrollRef,
     stick,
@@ -817,7 +830,7 @@ export function Transcript({
                 key={item.id}
                 item={item}
                 actionDisabled={running}
-                onAction={item.action === "continue_delivery" ? () => onPrompt(t("notice.deliveryIncompleteContinuePrompt")) : undefined}
+                onAction={item.action === "continue_delivery" ? (onDeliveryContinue ?? (() => onPrompt(t("notice.deliveryIncompleteContinuePrompt")))) : undefined}
               />,
             );
           } else {
@@ -922,6 +935,7 @@ export function Transcript({
               warmSetOpenAction={setOpenAction}
               warmOnEdit={onEditPrompt}
               warmOnPrompt={onPrompt}
+              warmOnDeliveryContinue={onDeliveryContinue}
               warmRunning={running}
               tabId={tabId}
               creationMode={creationMode}
@@ -996,6 +1010,7 @@ const WarmZone = memo(function WarmZone({
   warmSetOpenAction,
   warmOnEdit,
   warmOnPrompt,
+  warmOnDeliveryContinue,
   warmRunning,
   tabId,
   creationMode,
@@ -1022,6 +1037,7 @@ const WarmZone = memo(function WarmZone({
   warmSetOpenAction: (action: OpenTurnAction | null) => void;
   warmOnEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   warmOnPrompt: (text: string) => void;
+  warmOnDeliveryContinue?: () => void;
   warmRunning: boolean;
   tabId?: string;
   creationMode?: boolean;
@@ -1080,6 +1096,7 @@ const WarmZone = memo(function WarmZone({
               setOpenAction={warmSetOpenAction}
               onEdit={warmOnEdit}
               onPrompt={warmOnPrompt}
+              onDeliveryContinue={warmOnDeliveryContinue}
               running={warmRunning}
               tabId={tabId}
               creationMode={creationMode}
@@ -1131,6 +1148,7 @@ function WarmTurnItems({
   setOpenAction,
   onEdit,
   onPrompt,
+  onDeliveryContinue,
   running,
   tabId,
   creationMode = false,
@@ -1151,6 +1169,7 @@ function WarmTurnItems({
   setOpenAction: (action: OpenTurnAction | null) => void;
   onEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onPrompt: (text: string) => void;
+  onDeliveryContinue?: () => void;
   running: boolean;
   tabId?: string;
   creationMode?: boolean;
@@ -1210,7 +1229,7 @@ function WarmTurnItems({
             key={item.id}
             item={item}
             actionDisabled={running}
-            onAction={item.action === "continue_delivery" ? () => onPrompt(t("notice.deliveryIncompleteContinuePrompt")) : undefined}
+            onAction={item.action === "continue_delivery" ? (onDeliveryContinue ?? (() => onPrompt(t("notice.deliveryIncompleteContinuePrompt")))) : undefined}
           />,
         );
       } else {
@@ -1469,7 +1488,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
       flushToolBatch();
       flushRO();
     }
-    if (!creationMode && it.kind === "tool" && !it.parentId && it.name !== "todo_write" && it.name !== "exit_plan_mode" && it.status !== "running" && isReadOnlyTool(it.name)) {
+    if (!creationMode && it.kind === "tool" && !it.parentId && it.name !== "todo_write" && it.name !== "exit_plan_mode" && it.status !== "running" && it.readOnly) {
       roBatch.push(it as ToolItem);
       continue;
     }
