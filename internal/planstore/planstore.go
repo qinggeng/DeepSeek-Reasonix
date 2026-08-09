@@ -15,6 +15,15 @@ const (
 	homeKeyName = "master.key"
 	plansRel    = ".reasonix/plans"
 	keysRel     = ".reasonix/keys"
+
+	// DefaultMaxEntries caps the number of write_scope and change_manifest
+	// entries plan_submit accepts per list (shared by both, per UAT). The cap
+	// is configurable per store (Store.MaxEntries) so tests inject a small
+	// value; 50 is the production default. Rationale (Sprint 10 registry
+	// entry 4): models occasionally submit absurdly large lists — a directory
+	// prefix in the scope already covers everything below it recursively, so a
+	// huge list is a smell and is hard to review.
+	DefaultMaxEntries = 50
 )
 
 // Store is the encrypted plan store bound to one workspace. It holds the
@@ -27,6 +36,11 @@ type Store struct {
 	projectKey []byte
 	plansDir   string
 	keysDir    string
+
+	// MaxEntries caps plan_submit's write_scope and change_manifest entry
+	// counts (default DefaultMaxEntries). Exposed for tests to inject a small
+	// cap; production always gets the default via Open.
+	MaxEntries int
 }
 
 // masterKeyPath resolves <reasonix home>/master.key. The resolution mirrors
@@ -97,6 +111,7 @@ func Open(wsRoot string) (*Store, error) {
 		projectKey: projectKey,
 		plansDir:   plansDir,
 		keysDir:    keysDir,
+		MaxEntries: DefaultMaxEntries,
 	}, nil
 }
 

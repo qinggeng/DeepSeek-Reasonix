@@ -227,6 +227,7 @@ var English = Messages{
 	CmdStrictPlan:       "strict plan drafting: plan_submit gate \u2192 review \u2192 lock, outputs plan-id",
 	CmdStrictPlanDetail: "view a strict plan's full detail (steps, acceptance script, write scope, change manifest)",
 	CmdStrictPlanList:   "list strict plans (id + stage); with a plan id, show its detail",
+	CmdStrictPlanDelete: "delete a strict plan by id (irreversible; refused while executing)",
 	CmdStrictPlanExec:   "execute a locked strict plan: acceptance loop to done/failed",
 	CmdClear:            "discard current context",
 	CmdCls:              "clear screen only (keep LLM context)",

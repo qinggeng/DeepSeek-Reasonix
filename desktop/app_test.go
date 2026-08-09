@@ -391,6 +391,9 @@ func TestCommandsIncludesDocsAndEffortNotThinking(t *testing.T) {
 	if !hasCommand(cmds, "strict-plan-list") {
 		t.Fatalf("Commands() should include strict-plan-list: %+v", cmds)
 	}
+	if !hasCommand(cmds, "strict-plan-delete") {
+		t.Fatalf("Commands() should include strict-plan-delete: %+v", cmds)
+	}
 	if !hasCommand(cmds, "strict-plan-exec") {
 		t.Fatalf("Commands() should include strict-plan-exec: %+v", cmds)
 	}

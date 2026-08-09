@@ -31,10 +31,10 @@ The plan_submit payload has four parts:
 1. plan_id — a project-unique id you propose: letters, digits and hyphens (e.g. plan-001). A conflict with an existing non-rejected plan is rejected.
 2. steps — the plan steps in execution order (non-empty).
 3. validate_script — the acceptance script (Python). Exit code 0 = accepted, non-zero = rejected. It is the programmatic acceptance standard, so make its assertions strong enough to catch a fake implementation.
-4. write_scope — the whitelist of paths you may write during execution (path + reason each; a directory path grants everything below it recursively). Declare every path you will touch.
-5. change_manifest — the expected file changes (path + action in add|modify|delete), frozen at lock time.
+4. write_scope — the whitelist of paths you may write during execution (path + reason each; a directory path grants everything below it recursively). Declare every path you will touch. Keep the write scope and change manifest concise: a directory prefix covers everything below it recursively — do not list every file individually.
+5. change_manifest — the expected file changes (path + action in add|modify|delete), frozen at lock time. Paths ignored by .gitignore are invisible to the change comparison, so declare only git-visible paths that will actually change.
 
-Validation runs automatically on plan_submit: empty steps, empty or non-parseable script, empty scope, malformed entries or a duplicate plan id all return the concrete error — fix and re-submit. Stating that the plan is complete without calling plan_submit does not count. Do not modify workspace files during planning; this stage produces the plan only.`
+Validation runs automatically on plan_submit: empty steps, empty or non-parseable script, empty scope, malformed entries, an oversized scope or manifest or a duplicate plan id all return the concrete error — fix and re-submit. Stating that the plan is complete without calling plan_submit does not count. Do not modify workspace files during planning; this stage produces the plan only.`
 
 // planRejectedMessage is injected as a synthetic turn when the user rejects the
 // review: it sends the model back into the drafting loop to revise and re-submit.

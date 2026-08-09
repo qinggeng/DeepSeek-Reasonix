@@ -1230,7 +1230,7 @@
   },
   {
     "Name": "plan_submit",
-    "Description": "Submit the plan-stage artifacts (steps, acceptance script, write scope, change manifest) through the plan submission gate. This is the ONLY channel that enters review: validation runs automatically (steps non-empty, script non-empty and Python-parseable, scope format valid, plan id unique) and failures return the concrete error without entering review. After approval the plan is locked and becomes executable via /strict-plan-exec.",
+    "Description": "Submit the plan-stage artifacts (steps, acceptance script, write scope, change manifest) through the plan submission gate. This is the ONLY channel that enters review: validation runs automatically (steps non-empty, script non-empty and Python-parseable, scope format valid, scope/manifest concise and within the entry cap, plan id unique) and failures return the concrete error without entering review. After approval the plan is locked and becomes executable via /strict-plan-exec. Keep the write scope and change manifest concise — a directory path in the scope covers everything below it recursively.",
     "ReadOnly": false,
     "Schema": {
       "properties": {

@@ -218,6 +218,7 @@ var ChineseTraditional = Messages{
 	CmdStrictPlan:       "嚴格計劃制定：plan_submit 工具門提交 → 評審鎖定 → 輸出 plan-id",
 	CmdStrictPlanDetail: "查看嚴格計劃完整詳情（步驟、驗收腳本、可寫範圍、變動清單）",
 	CmdStrictPlanList:   "列出嚴格計劃（id + 階段）；帶 plan-id 時查看其詳情",
+	CmdStrictPlanDelete: "按 id 刪除嚴格計劃（不可恢復；執行中禁止刪除）",
 	CmdStrictPlanExec:   "執行已鎖定的嚴格計劃：驗收循環直至 done/failed",
 	CmdCls:              "清除畫面（保留 LLM 上下文）",
 	CmdCompact:          "壓縮上下文",

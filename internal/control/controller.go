@@ -1500,6 +1500,9 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 		case "/strict-plan-list":
 			c.applyStrictPlanList(trimmed, display)
 			return
+		case "/strict-plan-delete":
+			c.applyStrictPlanDelete(trimmed, display)
+			return
 		case "/strict-plan-exec":
 			c.applyStrictPlanExec(trimmed, display)
 			return

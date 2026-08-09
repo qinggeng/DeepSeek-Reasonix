@@ -220,6 +220,7 @@ type Messages struct {
 	CmdStrictPlan       string // /strict-plan
 	CmdStrictPlanDetail string // /strict-plan-detail
 	CmdStrictPlanList   string // /strict-plan-list
+	CmdStrictPlanDelete string // /strict-plan-delete
 	CmdStrictPlanExec   string // /strict-plan-exec
 	CmdClear            string // /clear
 	CmdCls              string // /cls

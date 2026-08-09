@@ -23,6 +23,13 @@ const (
 // planIDRE matches CONTEXT.md [[计划 ID]]: English letters, digits and hyphens.
 var planIDRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]*$`)
 
+// ValidatePlanID reports whether id is a valid plan id (letters, digits and
+// hyphens, per CONTEXT.md [[计划 ID]]). Exported so user-side commands can
+// validate before touching the filesystem.
+func ValidatePlanID(id string) error {
+	return validPlanID(id)
+}
+
 func validPlanID(id string) error {
 	if id == "" {
 		return fmt.Errorf("plan id is empty")

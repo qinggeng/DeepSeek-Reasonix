@@ -18,8 +18,7 @@ import (
 // as kernel built-ins (only the kernel can reach the encrypted store and driver
 // state — see docs/arch/plan-execute.md §5). The driver injects the workspace
 // store via planstore.WithStore; outside strict plan mode every tool fails
-// closed. Command wiring (/strict-plan etc.) lands in a later sprint; this
-// sprint only registers the tools.
+// closed.
 
 func init() {
 	tool.RegisterBuiltin(planSubmit{pyCheck: pythonSyntaxCheck})
@@ -67,7 +66,7 @@ type submitArgs struct {
 func (planSubmit) Name() string { return "plan_submit" }
 
 func (planSubmit) Description() string {
-	return "Submit the plan-stage artifacts (steps, acceptance script, write scope, change manifest) through the plan submission gate. This is the ONLY channel that enters review: validation runs automatically (steps non-empty, script non-empty and Python-parseable, scope format valid, plan id unique) and failures return the concrete error without entering review. After approval the plan is locked and becomes executable via /strict-plan-exec."
+	return "Submit the plan-stage artifacts (steps, acceptance script, write scope, change manifest) through the plan submission gate. This is the ONLY channel that enters review: validation runs automatically (steps non-empty, script non-empty and Python-parseable, scope format valid, scope/manifest concise and within the entry cap, plan id unique) and failures return the concrete error without entering review. After approval the plan is locked and becomes executable via /strict-plan-exec. Keep the write scope and change manifest concise — a directory path in the scope covers everything below it recursively."
 }
 
 func (planSubmit) Schema() json.RawMessage {
@@ -125,6 +124,16 @@ func (t planSubmit) Execute(ctx context.Context, args json.RawMessage) (string, 
 	s, err := storeFrom(ctx)
 	if err != nil {
 		return "", err
+	}
+	// Size caps: a directory prefix in the scope already covers everything
+	// below it recursively, so oversized lists are a smell and hard to review
+	// (Sprint 10 registry entry 4). The cap is shared by both lists and
+	// configurable per store; production defaults to planstore.DefaultMaxEntries.
+	if len(p.WriteScope) > s.MaxEntries {
+		return "", fmt.Errorf("write_scope has %d entries, exceeding the limit of %d — keep it concise: a directory path covers everything below it recursively", len(p.WriteScope), s.MaxEntries)
+	}
+	if len(p.ChangeManifest) > s.MaxEntries {
+		return "", fmt.Errorf("change_manifest has %d entries, exceeding the limit of %d — keep it concise: declare only the git-visible files that will actually change", len(p.ChangeManifest), s.MaxEntries)
 	}
 	// Uniqueness gate: an existing non-rejected plan with this id is a conflict.
 	if ids, err := s.ListPlans(); err != nil {

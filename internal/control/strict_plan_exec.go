@@ -30,13 +30,20 @@ const execInitialRetriesLeft = strictExecMaxRounds - 1
 // locked plan, stay inside the write scope and the change manifest, and let
 // the driver's acceptance gates judge. The plan document is rendered through
 // the shared readability mechanism (RenderPlanDetail).
-const strictExecPrompt = `You are the executor in strict plan mode. Implement the locked plan below in the workspace: follow the numbered steps, stay inside the write scope, and make the acceptance script pass. After each of your turns the driver runs the acceptance script and compares the actual file changes against the frozen change manifest; both must pass for the plan to be accepted.
+// Sprint 10 clarity fixes: plan_submit is forbidden during execution; the
+// change payload (write scope + acceptance script, each with a reason) is
+// stated explicitly; the strictness layering is explicit — steps are guidance,
+// the write scope and the acceptance script are the contract; and gitignored
+// paths are called out as invisible to the change comparison.
+const strictExecPrompt = `You are the executor in strict plan mode. Implement the locked plan below in the workspace. The numbered steps are guidance, not a contract — what is strictly enforced is the write scope and the acceptance script. After each of your turns the driver runs the acceptance script and compares the actual file changes against the frozen change manifest; both must pass for the plan to be accepted.
 
 Rules:
+- Do not call plan_submit during execution — it cannot modify a locked/executing plan; request a change via plan_request_change instead.
 - Write only files declared in the write scope; out-of-scope writes are refused by the write gate.
 - Change only files declared in the change manifest; an out-of-manifest change, or a declared change that never happened, fails the baseline comparison and the turn is not accepted.
+- Paths ignored by .gitignore are invisible to the change comparison; implement and assert on git-visible paths only.
 - The acceptance script is readable (plan_get) but not writable.
-- If the locked plan itself is wrong (script too strict, scope missing a path, manifest misdeclared), request a change via plan_request_change — it goes through review and takes effect only if approved.
+- If the locked plan itself is wrong (script too strict, scope missing a path, manifest misdeclared), request a change via plan_request_change — the payload is a new write_scope and/or a new validate_script, each with a reason. The request goes through review and takes effect only if approved; an approved change resets the retry counter.
 - You have at most %d rounds under the same acceptance standard (first attempt plus retries; an approved change request resets the budget). When the acceptance output is injected back, fix the implementation accordingly.
 
 ## Plan

@@ -7377,6 +7377,7 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "strict-plan", Description: i18n.M.CmdStrictPlan, Kind: "builtin", Group: "actions"},
 		{Name: "strict-plan-detail", Description: i18n.M.CmdStrictPlanDetail, Kind: "builtin", Group: "actions"},
 		{Name: "strict-plan-list", Description: i18n.M.CmdStrictPlanList, Kind: "builtin", Group: "actions"},
+		{Name: "strict-plan-delete", Description: i18n.M.CmdStrictPlanDelete, Kind: "builtin", Group: "actions"},
 		{Name: "strict-plan-exec", Description: i18n.M.CmdStrictPlanExec, Kind: "builtin", Group: "actions"},
 		{Name: "clear", Description: i18n.M.CmdClear, Kind: "builtin", Group: "actions"},
 		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin", Group: "actions"},
