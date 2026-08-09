@@ -42,33 +42,16 @@ Flags may appear before or after the prompt where applicable.
 ## Update the native CLI
 
 ```sh
-reasonix upgrade                  # update on the saved channel (Stable initially)
-reasonix upgrade preview          # switch to Preview, remember it, and update
-reasonix upgrade stable           # switch back to Stable, remember it, and update
+reasonix upgrade                  # install the latest official release
+reasonix upgrade --check          # report the target without installing
+reasonix upgrade --force          # reinstall the current official release
 ```
 
-The selected channel is user-global and is stored as
-`[cli].update_channel` in the Reasonix user config. A fresh or older config
-defaults to Stable, and a project's `reasonix.toml` cannot override this choice.
-Stable and Preview replace the same native CLI binary; they are not installed
-side by side.
-
-Preview accepts only protected `vX.Y.Z-preview.N` releases; internal RCs are
-excluded from both public channels. Switching channels may install a
-numerically older target, which is required when returning from a newer Preview
-to the current Stable release.
-
-For automation, `--channel stable|preview` remains a one-off override and does
-not change the saved channel:
-
-```sh
-reasonix upgrade preview --check          # save Preview, only check its target
-reasonix upgrade --channel preview        # one-off Preview update for a script
-reasonix upgrade --channel stable --force # one-off Stable reinstall
-```
-
-`--check` reports the target without installing it, while `--force` reinstalls
-the target channel's current release. The `reasonix update` alias behaves the
+The updater selects only strict `vX.Y.Z` non-prerelease GitHub Releases. During
+the 1.x compatibility period, old channel arguments and `--channel` are still
+accepted, but resolve to the same official release and print a deprecation
+notice. Legacy `[cli].update_channel` values are ignored and removed the next
+time Reasonix saves the configuration. The `reasonix update` alias behaves the
 same way.
 
 ## Configure providers
@@ -123,6 +106,24 @@ In an interactive session, `/currency` shows the saved and resolved values, and
 `/currency auto|CNY|USD` changes the preference and refreshes the current
 runtime without discarding the conversation.
 
+### Configure automatic compaction
+
+The desktop app and CLI share the user-global automatic compaction threshold.
+Inspect the effective percentage and its source, set the global default, or add
+a project override:
+
+```sh
+reasonix config compact-ratio              # show effective value and source
+reasonix config compact-ratio 75           # set the user-global default
+reasonix config compact-ratio --local 75   # override in ./reasonix.toml
+```
+
+The editable range is 65–85%, with 80% as the built-in default. Lower values
+compact earlier and may reduce prompt-prefix cache reuse; higher values retain
+more context before compaction. Project `reasonix.toml` takes precedence over
+the user config. Changes apply to new CLI sessions; an already-running session
+keeps the threshold it loaded at startup.
+
 ## One-shot and automation
 
 Use `-p` / `--print` when a script needs only the final answer:
@@ -131,13 +132,30 @@ Use `-p` / `--print` when a script needs only the final answer:
 reasonix -p "summarize this repository"
 reasonix -p "summarize this repository" --output-format json
 reasonix run "implement the TODOs in main.go"
+reasonix run --auto "implement the TODOs in main.go"
 echo "explain this code" | reasonix run
 ```
 
 `reasonix run` keeps the normal streamed terminal presentation unless `-p` or a
 structured output format is selected. It also accepts `--model`, `--profile`,
-`--max-steps`, `--effort`, `--dir`, `--add-dir`, `--continue`, `--resume PATH`,
-`--copy`, `--allowed-tools`, and `--permission-mode`.
+`--max-steps`, `--effort`, `--dir`, `--add-dir`, `--continue`, `--resume QUERY`,
+`--copy`, `--allowed-tools`, `--permission-mode`, and `--auto` / `-y` (an alias
+for `--permission-mode auto`).
+
+### Benchmark arms
+
+`--ablate` switches whole subsystems off so a benchmark can attribute a change
+in success rate to one of them. It accepts a comma-separated list of `evidence`,
+`planner`, `subagent`, `retrieval` and `compaction`, plus `none` (the default,
+everything on) and `all`. Sub-agents inherit the parent's arm, and the arm name
+is written to the `--metrics` file so a recorded run is self-describing.
+
+```sh
+reasonix run --ablate evidence,planner --metrics run.json "fix the failing test"
+```
+
+This is a measurement tool, not a tuning knob: switching a subsystem off makes
+Reasonix worse at the work it was added for.
 
 ### Output formats
 
@@ -215,6 +233,9 @@ reasonix session status <machine-session-id> --json [--dir SESSION_DIR | --proje
 reasonix session recovery [<machine-session-id>] --json [--dir SESSION_DIR | --project-root PATH]
 reasonix task list --json [--dir SESSION_DIR | --project-root PATH] [--session MACHINE_SESSION_ID]
 reasonix task show <task-id> --json [--dir SESSION_DIR | --project-root PATH] [--session MACHINE_SESSION_ID]
+reasonix task monitor list --json [--dir PROJECT_DIR]
+reasonix task monitor status <task-id> --json [--dir PROJECT_DIR]
+reasonix task monitor events <task-id> --json|--jsonl [--dir PROJECT_DIR] [--after N] [--follow]
 reasonix hook list --json [--project-root PATH] [--home-dir PATH]
 reasonix hook status --json [--project-root PATH] [--home-dir PATH]
 ```
@@ -265,15 +286,17 @@ reasonix --resume provider-config --copy
 - `--copy` leaves the original transcript untouched and continues in a new
   writable session. Use it when another Reasonix process owns the original.
 
-For one-shot runs, `reasonix run --resume PATH "task"` accepts a session file
-path. Session leases prevent the desktop app and CLI from writing the same
-transcript concurrently.
+For one-shot runs, `reasonix run --resume QUERY "task"` accepts a session file
+path, a session ID, or an opaque machine session ID from `--events-jsonl` /
+`reasonix session show --json`. Session leases prevent the desktop app and CLI
+from writing the same transcript concurrently.
 
 ## Permissions
 
 ```sh
 reasonix --permission-mode plan
 reasonix --permission-mode acceptEdits
+reasonix run -y "apply the requested changes"
 reasonix -p "run the focused tests" --allowed-tools "Bash(go test ./...)"
 reasonix --allowed-tools "Bash(git *) Edit"
 reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
@@ -288,19 +311,32 @@ reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
 | `plan` | Start the plan-first workflow; tool calls still use the active permissions and sandbox. |
 | `bypassPermissions` | Bypass approval prompts; equivalent to YOLO. |
 
+For unattended execution with ordinary writer fallback enabled, use
+`reasonix run --auto ...` (or `-y`). The alias cannot be combined with an
+explicit `--permission-mode` value.
+
+`[permissions] allow_dynamic_bash = true` is an advanced opt-in that lets an
+Allow fallback, including Auto, cover command/process substitution, dynamic
+command names, shell `-c`, and other nested/indirect Bash forms. The default is
+`false`; explicit `ask` and `deny` rules still take precedence.
+
 `--allowed-tools` is a session permission override, not a provider tool-schema
 filter. Rules may be comma- or space-separated, and the flag is repeatable.
 Configured deny rules always win over command-line allow rules.
 
 In non-interactive runs (`reasonix run` / `-p`) there is no prompt to answer, so
-each mode resolves without blocking: `ask`, `manual`, and `acceptEdits` keep run
-autonomy and let ordinary approval decisions proceed; `auto` still auto-approves
-the normal fallback but denies a command that matches an explicit ask rule rather
-than running it unattended; `dontAsk` denies; and `bypassPermissions` runs
-everything except tools that always require fresh human approval (memory, plan,
-sandbox escape, managed config write). In every mode, the owning top-level
-controller may still create a bounded, non-sensitive, create-only project or
-reference memory; all other memory mutations remain denied without a human.
+approval modes resolve without blocking. The default `ask` / `manual` posture
+fails closed for explicit Ask decisions and ordinary writer fallback; readers
+still run. `acceptEdits` allows its named file-edit tools, while other Ask
+decisions fail closed. `auto` allows ordinary writer fallback but still denies
+an explicit ask rule; select it with `--permission-mode auto`, `--auto`, or
+`-y`. `dontAsk` denies unapproved writers.
+`bypassPermissions` runs ordinary calls despite ask rules and writer fallback,
+but configured deny rules, the sandbox, and tools that require fresh human
+approval (memory, plan, sandbox escape, managed config write) still apply. In
+every mode, the owning top-level controller may still create a bounded,
+non-sensitive, create-only project or reference memory; all other memory
+mutations remain denied without a human.
 
 ## Additional directories
 
@@ -382,16 +418,23 @@ the displayed list matches the commands the TUI accepts.
 | `/output-style` | Select an answer style. |
 | `/verbose` | Toggle expanded reasoning display. |
 | `/sandbox` | Inspect sandbox status. |
-| `/goal` | Start, inspect, or clear a long-running goal. |
+| `/goal [objective]` | Start a long-running goal, or inspect the current goal and its budget runtime. |
+| `/goal status` | Show the active goal plus the turn/token/no-progress budget summary and the last continuation/evaluator reason. |
+| `/goal pause` | Pause the running goal (keeps todos, Delivery checkpoint, and budget). |
+| `/goal resume` | Resume a paused or blocked goal (budget pauses add one more budget slice). |
+| `/goal clear` | End goal mode permanently. |
+| `/docs [question]` | Show the embedded corpus identity, or search it locally and ask the configured AI to answer from version-matched evidence. |
+| `/reasonix:docs [question]` | Preferred built-in fallback when an existing custom command or compatible plugin/skill alias owns `/docs`; if this spelling is also owned, the menu selects the next free `reasonix:`-qualified name without displacing it. |
 | `/mcp`, `/skills`, `/hooks` | Inspect and manage extensions. |
 | `/remember <note>` | Append a standing note to the project instruction document; `# <note>` is a shortcut. |
 | `/memory [subcommand]` | Inspect instructions, memory provenance, recall, revisions, and recovery. |
 | `/rewind` | Restore conversation and/or code to an earlier turn. |
 | `/tree`, `/branch`, `/switch` | Inspect or navigate conversation branches. |
+| `/reload` | Reload the agent runtime (extensions, tools, skills, commands, hooks, providers) while keeping the session. Queued once while a turn runs, then fail-atomic: a failed rebuild keeps the current runtime. |
 
 Switching model, effort, or work mode rebuilds the runtime while preserving the
 active conversation, session-scoped permission overrides, additional directory
-access, and session ownership.
+access, and session ownership. `/reload` uses the same fail-atomic rebuild.
 
 ### Memory diagnostics and recovery
 
@@ -409,7 +452,8 @@ names, and owned archive paths.
 | `/memory archived` | List archived facts and their owned paths. |
 | `/memory recover <archive-path>` | Recover an archive as a new revision without overwriting active data. |
 
-These commands run against the active session controller. In a Remote Workbench
-they use the remote memory catalog and never fall back to local desktop memory.
-See [Context Engine v2](./SESSION_MEMORY_RETRIEVAL.md) for authority, automatic
-recall, write confirmation, and migration behavior.
+These commands run against the active session controller. When the session
+lives on a remote host (`reasonix remote connect` / a desktop remote web
+window), they use the remote memory catalog and never fall back to local
+desktop memory. See [Context Engine v2](./SESSION_MEMORY_RETRIEVAL.md) for
+authority, automatic recall, write confirmation, and migration behavior.

@@ -226,7 +226,7 @@ func (c *appControl) SubmitPrompt(topicID, input string) (string, error) {
 		}
 	})
 
-	ok := c.app.submitUserTurnToTabWithSink(tabID, input, sink)
+	ok := c.app.submitPromptToTabWithSink(tabID, input, sink)
 	if !ok {
 		c.hub.Unregister(streamID)
 		return "", fmt.Errorf("topic not ready: %s", topicID)

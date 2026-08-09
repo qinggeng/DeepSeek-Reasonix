@@ -333,8 +333,6 @@ func eventKindName(k event.Kind) string {
 		return "Retrying"
 	case event.Steer:
 		return "Steer"
-	case event.MemoryCompilerStatsEvent:
-		return "MemoryCompilerStats"
 	case event.GuardianAssessment:
 		return "GuardianAssessment"
 	default:

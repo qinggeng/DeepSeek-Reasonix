@@ -18,3 +18,18 @@ func Active(ctx context.Context) bool {
 	active, _ := ctx.Value(activeCtxKey{}).(bool)
 	return active
 }
+
+type strictCtxKey struct{}
+
+// WithStrict stamps ctx with the strict plan execution flag: the driver has
+// entered the /strict-plan-exec acceptance loop, so bash must stay confined to
+// the workspace and write tools are held to the locked plan's write scope.
+func WithStrict(ctx context.Context, strict bool) context.Context {
+	return context.WithValue(ctx, strictCtxKey{}, strict)
+}
+
+// StrictActive reports whether ctx carries an active strict plan execution flag.
+func StrictActive(ctx context.Context) bool {
+	strict, _ := ctx.Value(strictCtxKey{}).(bool)
+	return strict
+}

@@ -16,12 +16,32 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/hook"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
 type plannerMetadataRunner struct {
 	meta  plannerTurnMetadata
 	input string
+}
+
+type goalReplacingRunner struct {
+	c        *Controller
+	executor *agent.Agent
+	calls    int
+}
+
+func (r *goalReplacingRunner) Run(context.Context, string) error {
+	r.calls++
+	if r.calls == 1 {
+		r.c.SetGoal("replacement goal")
+		r.executor.ReplaceTodoState(nil)
+		r.executor.Session().Add(provider.Message{
+			Role:    provider.RoleAssistant,
+			Content: "Old Goal turn finished.\n\n[goal:complete]",
+		})
+	}
+	return nil
 }
 
 func (r *plannerMetadataRunner) Run(ctx context.Context, input string) error {
@@ -81,6 +101,43 @@ func TestTurnOrchestratorRunsForegroundUnit(t *testing.T) {
 	}
 }
 
+func TestNonGoalTurnDoesNotInvokeGoalEvaluator(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*turnOrchestrator) error
+	}{
+		{
+			name: "ordinary",
+			run: func(o *turnOrchestrator) error {
+				return o.runGoalLoopWithRawDisplay(context.Background(), "answer", "answer", "")
+			},
+		},
+		{
+			name: "edited",
+			run: func(o *turnOrchestrator) error {
+				return o.runEditedGoalLoopWithRawDisplay(context.Background(), "answer", "answer", "", "old answer")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeTurnRunner{}
+			evaluator := &fakeGoalEvaluator{}
+			c := New(Options{Runner: runner, GoalEvaluator: evaluator})
+
+			if err := tt.run(newTurnOrchestrator(c)); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.inputs) != 1 {
+				t.Fatalf("runner inputs = %d, want 1", len(runner.inputs))
+			}
+			if evaluator.calls != 0 {
+				t.Fatalf("goal evaluator calls = %d, want 0 outside Goal mode", evaluator.calls)
+			}
+		})
+	}
+}
+
 func TestTurnOrchestratorTypedSyntheticTurnDoesNotDependOnPrefix(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	c := New(Options{Runner: runner})
@@ -99,6 +156,139 @@ func TestTurnOrchestratorTypedSyntheticTurnDoesNotDependOnPrefix(t *testing.T) {
 	}
 	if strings.HasPrefix(runner.inputs[0], PlanModeMarker) {
 		t.Fatalf("typed synthetic turn should remain a plain turn, got %q", runner.inputs[0])
+	}
+}
+
+func TestGoalTurnOutputCannotAdvanceReplacementGoal(t *testing.T) {
+	executor := agent.New(nil, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
+	runner := &goalReplacingRunner{executor: executor}
+	evaluator := &fakeGoalEvaluator{}
+	c := New(Options{
+		Runner:        runner,
+		Executor:      executor,
+		GoalEvaluator: evaluator,
+		SessionDir:    t.TempDir(),
+	})
+	runner.c = c
+	c.SetGoal("old goal")
+
+	if err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(
+		context.Background(),
+		"work on the old goal",
+		"work on the old goal",
+		"",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1 old-Goal turn", runner.calls)
+	}
+	if got := c.Goal(); got != "replacement goal" {
+		t.Fatalf("Goal() = %q, want replacement Goal to remain active", got)
+	}
+	if got := c.GoalStatus(); got != GoalStatusRunning {
+		t.Fatalf("GoalStatus() = %q, want replacement Goal to remain running", got)
+	}
+	if evaluator.calls != 0 {
+		t.Fatalf("stale Goal evaluator calls = %d, want 0", evaluator.calls)
+	}
+}
+
+func TestGoalContinuationNoticeCannotMoveOldInterceptIntoReplacementGoal(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	session := agent.NewSession("")
+	session.Add(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: "All done.",
+	})
+	executor := agent.New(nil, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+	executor.SeedTodoState([]evidence.TodoItem{{
+		Content: "unfinished work from old goal",
+		Status:  "in_progress",
+	}})
+
+	var c *Controller
+	replaced := false
+	c = New(Options{
+		Runner:   runner,
+		Executor: executor,
+		Sink: event.FuncSink(func(e event.Event) {
+			if replaced ||
+				e.Kind != event.Notice ||
+				!strings.Contains(e.Text, "Goal is not ready to complete yet") {
+				return
+			}
+			replaced = true
+			c.SetGoal("replacement goal")
+		}),
+	})
+	c.SetGoal("old goal")
+	scopeID, _, _ := c.goals.deliveryScope()
+	rec := c.goals.newTurnRecorder(scopeID, c.goals.continuationToken())
+	if _, err := rec.RecordGoalReport(tool.GoalReport{Status: GoalStatusComplete, Reason: ""}); err != nil {
+		t.Fatal(err)
+	}
+	c.goalUsageTee.setActiveRecorder(rec)
+
+	if err := newTurnOrchestrator(c).continueGoal(
+		context.Background(),
+		c.goals.continuationToken(),
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !replaced {
+		t.Fatal("test setup: Notice callback did not replace the active Goal")
+	}
+	if got := c.Goal(); got != "replacement goal" {
+		t.Fatalf("Goal() = %q, want replacement goal", got)
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("stale continuation reached runner with input %q", runner.inputs[0])
+	}
+}
+
+func TestGoalContinuationOutputCannotAdvanceReplacementGoal(t *testing.T) {
+	session := agent.NewSession("system")
+	session.Add(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: "All done.",
+	})
+	executor := agent.New(nil, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+	executor.SeedTodoState([]evidence.TodoItem{{
+		Content: "unfinished work from old goal",
+		Status:  "in_progress",
+	}})
+	runner := &goalReplacingRunner{executor: executor}
+	c := New(Options{
+		Runner:     runner,
+		Executor:   executor,
+		SessionDir: t.TempDir(),
+	})
+	runner.c = c
+	c.SetGoal("old goal")
+	scopeID, _, _ := c.goals.deliveryScope()
+	rec := c.goals.newTurnRecorder(scopeID, c.goals.continuationToken())
+	if _, err := rec.RecordGoalReport(tool.GoalReport{Status: GoalStatusComplete, Reason: ""}); err != nil {
+		t.Fatal(err)
+	}
+	c.goalUsageTee.setActiveRecorder(rec)
+
+	if err := newTurnOrchestrator(c).continueGoal(
+		context.Background(),
+		c.goals.continuationToken(),
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1 old-Goal continuation", runner.calls)
+	}
+	if got := c.Goal(); got != "replacement goal" {
+		t.Fatalf("Goal() = %q, want replacement Goal to remain active", got)
+	}
+	if got := c.GoalStatus(); got != GoalStatusRunning {
+		t.Fatalf("GoalStatus() = %q, want replacement Goal to remain running", got)
 	}
 }
 
@@ -139,6 +329,7 @@ func TestTurnOrchestratorStopHookIgnoresCanceledTurnContext(t *testing.T) {
 type recordingSessionRunner struct {
 	session *agent.Session
 	inputs  []string
+	raw     []string
 }
 
 type deliveryScopeErrorRunner struct {
@@ -149,27 +340,33 @@ func (r *deliveryScopeErrorRunner) Run(ctx context.Context, _ string) error {
 	if scope, ok := agent.DeliveryExecutionScopeFromContext(ctx); ok {
 		r.scopes = append(r.scopes, scope)
 	}
-	return &agent.FinalReadinessError{Attempts: 3, Reason: "missing verification"}
+	return &agent.FinalReadinessError{Attempts: 1, Reason: "missing verification", Missing: []string{"verification"}}
 }
 
-func TestGoalReadinessFailureBlocksAndKeepsDeliveryScope(t *testing.T) {
+func TestGoalReadinessFailureContinuesThenPausesOnNoProgress(t *testing.T) {
 	runner := &deliveryScopeErrorRunner{}
-	c := New(Options{Runner: runner})
+	executor := agent.New(nil, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	c := New(Options{Runner: runner, Executor: executor})
 	c.SetGoal("ship the integration")
 
 	err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "start", "start", "")
-	var readiness *agent.FinalReadinessError
-	if !errors.As(err, &readiness) {
-		t.Fatalf("run err = %v, want FinalReadinessError", err)
+	if err != nil {
+		t.Fatalf("run err = %v, want the loop to absorb FinalReadinessError and pause on no-progress", err)
 	}
+	// The FSM absorbs the readiness failure and continues with the missing
+	// requirements; with no host-verifiable progress across turns the
+	// no-progress gate pauses the goal instead of looping forever.
 	if got := c.GoalStatus(); got != GoalStatusBlocked {
-		t.Fatalf("GoalStatus = %q, want blocked", got)
+		t.Fatalf("GoalStatus = %q, want blocked (no-progress pause)", got)
 	}
-	if len(runner.scopes) != 1 || runner.scopes[0].ID == "" || runner.scopes[0].TaskText != "ship the integration" {
-		t.Fatalf("delivery scopes = %+v", runner.scopes)
+	if rt := c.GoalRuntime(); rt.StopCause != stopCauseNoProgress {
+		t.Fatalf("stop cause = %q, want %q", rt.StopCause, stopCauseNoProgress)
+	}
+	if len(runner.scopes) < 2 || runner.scopes[0].ID == "" || runner.scopes[0].TaskText != "ship the integration" {
+		t.Fatalf("delivery scopes = %+v, want scoped continuation turns", runner.scopes)
 	}
 	if !c.ResumeGoal() || c.GoalStatus() != GoalStatusRunning {
-		t.Fatal("blocked Goal should resume with its existing scope")
+		t.Fatal("paused Goal should resume with its existing scope")
 	}
 	if id, task, ok := c.goals.deliveryScope(); !ok || id != runner.scopes[0].ID || task != "ship the integration" {
 		t.Fatalf("resumed scope = (%q, %q, %v), want preserved id/task", id, task, ok)
@@ -236,16 +433,17 @@ func TestRecoveryPauseKeepsGoalRunningAndDeliveryScope(t *testing.T) {
 
 func (r *recordingSessionRunner) Run(ctx context.Context, input string) error {
 	r.inputs = append(r.inputs, input)
+	r.raw = append(r.raw, agent.RawUserInput(ctx, input))
 	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
 	return nil
 }
 
 func TestTurnOrchestratorGoalContinuationRunsStopPerUnit(t *testing.T) {
-	prov := &scriptedTurns{turns: [][]provider.Chunk{
-		textTurn("Started.\n\n[goal:continue]"),
-		textTurn("Finished.\n\n[goal:complete]"),
-	}}
-	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	prov := &scriptedTurns{turns: flattenTurns(
+		goalToolTurn(GoalStatusRunning, "started", "next"),
+		goalToolTurn(GoalStatusComplete, "", ""),
+	)}
+	ag := agent.New(prov, goalRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
 	var stopEvents int
 	hooks := hook.NewRunner([]hook.ResolvedHook{{
 		HookConfig: hook.HookConfig{Command: "record-stop"},
@@ -269,8 +467,8 @@ func TestTurnOrchestratorGoalContinuationRunsStopPerUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if prov.call != 2 {
-		t.Fatalf("provider calls = %d, want initial + continuation", prov.call)
+	if prov.call != 4 {
+		t.Fatalf("provider calls = %d, want initial + continuation (report + final answer each)", prov.call)
 	}
 	if stopEvents != 2 {
 		t.Fatalf("Stop hook events = %d, want one per goal-loop turn unit", stopEvents)
@@ -379,6 +577,45 @@ func TestTurnOrchestratorRefTurnRecordsVisibleDisplay(t *testing.T) {
 	}
 }
 
+func TestTurnOrchestratorRefTurnPreservesExpandedPasteForRouting(t *testing.T) {
+	const label = "[Pasted text #1 · 2 lines]"
+	const display = "inspect\n\n" + label
+	const expanded = display + "\n\n--- Begin " + label + " ---\nroute-expanded-paste\nfunc main() {}\n--- End " + label + " ---"
+
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	runner := &recordingSessionRunner{session: sess}
+	reg := tool.NewRegistry()
+	reg.Add(capabilityTestTool{name: "run_skill"})
+	c := New(Options{
+		Runner:   runner,
+		Executor: exec,
+		Registry: reg,
+		Skills: []skill.Skill{{
+			Name:        "paste-review",
+			Description: "review code",
+			Triggers:    []string{"route-expanded-paste"},
+			Scope:       skill.ScopeBuiltin,
+		}},
+	})
+	resolve := func(context.Context, string) (string, []string) {
+		return "<file path=\"notes.txt\">\nreference\n</file>", nil
+	}
+
+	if err := c.runRefTurnWithResolverSync(context.Background(), expanded, expanded, display, "", resolve); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "Referenced context:") || !strings.Contains(runner.inputs[0], expanded) {
+		t.Fatalf("provider input = %+v, want resolved context and expanded paste", runner.inputs)
+	}
+	if !strings.Contains(runner.inputs[0], "skill:paste-review prefer") {
+		t.Fatalf("expanded pasted text did not drive capability routing:\n%s", runner.inputs[0])
+	}
+	if len(runner.raw) != 1 || runner.raw[0] != expanded {
+		t.Fatalf("persisted raw input = %+v, want complete user input %q", runner.raw, expanded)
+	}
+}
+
 func TestTurnOrchestratorAutoReasoningLanguageUsesRawPromptForRefTurns(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package main\nfunc AuthHandler() error { return errors.New(\"not authorized\") }\n"), 0o644); err != nil {
@@ -457,6 +694,46 @@ func TestTurnOrchestratorCheckpointBoundaryPrecedesUserMessage(t *testing.T) {
 	}
 	if len(sess.Messages) != 1 {
 		t.Fatalf("session messages after rewind = %d, want boundary before user message", len(sess.Messages))
+	}
+}
+
+// TestTurnOrchestratorCheckpointPromptIsRawUserInput verifies the rewind picker
+// label records the user's own text, not the composed provider input. compose()
+// prefixes the turn with transient blocks (<response-language>,
+// <reasoning-language>, plan marker, memory, hook context, …); storing that
+// string as checkpoint.Prompt made the Esc-Esc picker show a wall of prefab
+// prompt text instead of the user's messages.
+func TestTurnOrchestratorCheckpointPromptIsRawUserInput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	runner := &recordingSessionRunner{session: sess}
+	c := New(Options{
+		Runner:            runner,
+		Executor:          exec,
+		SessionDir:        dir,
+		SessionPath:       path,
+		Label:             "test",
+		ResponseLanguage:  "zh",
+		ReasoningLanguage: "en",
+	})
+	o := newTurnOrchestrator(c)
+	const raw = "fix the parser"
+	if err := o.runTurnWithRawDisplay(context.Background(), raw, raw, ""); err != nil {
+		t.Fatal(err)
+	}
+	cps := c.Checkpoints()
+	if len(cps) != 1 {
+		t.Fatalf("checkpoints = %+v, want exactly one", cps)
+	}
+	if got := cps[0].Prompt; got != raw {
+		t.Fatalf("checkpoint prompt = %q, want raw user input %q (composed text leaked into the rewind picker)", got, raw)
+	}
+	for _, prefab := range []string{"<response-language>", "<reasoning-language>"} {
+		if strings.Contains(cps[0].Prompt, prefab) {
+			t.Fatalf("checkpoint prompt contains %q: %q", prefab, cps[0].Prompt)
+		}
 	}
 }
 

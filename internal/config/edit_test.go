@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +134,9 @@ func TestDesktopPreferencesAreSeparateFromCLI(t *testing.T) {
 	if err := c.SetDesktopAppearance("dark", "graphite"); err != nil {
 		t.Fatalf("SetDesktopAppearance: %v", err)
 	}
+	if err := c.SetDesktopTerminalTheme("light"); err != nil {
+		t.Fatalf("SetDesktopTerminalTheme: %v", err)
+	}
 	if err := c.SetDesktopLayoutStyle("workbench"); err != nil {
 		t.Fatalf("SetDesktopLayoutStyle: %v", err)
 	}
@@ -161,6 +165,9 @@ func TestDesktopPreferencesAreSeparateFromCLI(t *testing.T) {
 	if got := c.DesktopThemeStyle(); got != "graphite" {
 		t.Fatalf("desktop theme style = %q, want graphite", got)
 	}
+	if got := c.DesktopTerminalTheme(); got != "light" {
+		t.Fatalf("desktop terminal theme = %q, want light", got)
+	}
 	if got := c.DesktopLayoutStyle(); got != "workbench" {
 		t.Fatalf("desktop layout style = %q, want workbench", got)
 	}
@@ -169,6 +176,21 @@ func TestDesktopPreferencesAreSeparateFromCLI(t *testing.T) {
 	}
 	if got, want := c.DesktopStatusBarItems(), []string{"model", "balance", "cache"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("desktop status bar items = %v, want %v", got, want)
+	}
+}
+
+func TestSetDesktopTerminalThemeValidatesPreference(t *testing.T) {
+	c := Default()
+	for _, theme := range []string{"auto", "dark", "light"} {
+		if err := c.SetDesktopTerminalTheme(theme); err != nil {
+			t.Fatalf("SetDesktopTerminalTheme(%q): %v", theme, err)
+		}
+		if got := c.DesktopTerminalTheme(); got != theme {
+			t.Fatalf("DesktopTerminalTheme() = %q, want %q", got, theme)
+		}
+	}
+	if err := c.SetDesktopTerminalTheme("sepia"); err == nil {
+		t.Fatal("SetDesktopTerminalTheme(sepia) succeeded, want validation error")
 	}
 }
 
@@ -585,6 +607,38 @@ func TestSetReasoningLanguage(t *testing.T) {
 	}
 }
 
+func TestSetCompactRatio(t *testing.T) {
+	c := Default()
+	for _, ratio := range []float64{0.65, 0.7, 0.8, 0.85} {
+		if err := c.SetCompactRatio(ratio); err != nil {
+			t.Fatalf("SetCompactRatio(%v): %v", ratio, err)
+		}
+		if c.Agent.CompactRatio != ratio {
+			t.Fatalf("compact ratio = %v, want %v", c.Agent.CompactRatio, ratio)
+		}
+	}
+
+	previous := c.Agent.CompactRatio
+	for _, ratio := range []float64{0.64, 0.86, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if err := c.SetCompactRatio(ratio); err == nil {
+			t.Fatalf("SetCompactRatio(%v) should fail", ratio)
+		}
+		if c.Agent.CompactRatio != previous {
+			t.Fatalf("rejected ratio %v changed compact ratio to %v", ratio, c.Agent.CompactRatio)
+		}
+	}
+
+	c.Agent.ToolResultSnipRatio = 0.75
+	if err := c.SetCompactRatio(0.7); err == nil {
+		t.Fatal("SetCompactRatio should reject a value at or below the configured snip ratio")
+	}
+	c.Agent.ToolResultSnipRatio = 0.6
+	c.Agent.CompactForceRatio = 0.8
+	if err := c.SetCompactRatio(0.8); err == nil {
+		t.Fatal("SetCompactRatio should reject a value at or above the configured force ratio")
+	}
+}
+
 func TestNormalizeEffortDeepSeek(t *testing.T) {
 	e := &ProviderEntry{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4"}
 	cap := EffortCapabilityForEntry(e)
@@ -707,6 +761,74 @@ func TestEffectiveVisionDoesNotInferCustomMimoProxy(t *testing.T) {
 	}
 }
 
+func TestEffectiveVisionDefaultsOfficialDeepSeekToTextOnlyButAllowsExplicitModels(t *testing.T) {
+	for _, endpoint := range []struct {
+		kind    string
+		baseURL string
+	}{
+		{kind: "openai", baseURL: "https://api.deepseek.com"},
+		{kind: "openai", baseURL: "https://api.deepseek.com/v1"},
+		{kind: "openai", baseURL: "https://eu.deepseek.com/v1"},
+		{kind: "anthropic", baseURL: "https://api.deepseek.com/anthropic"},
+	} {
+		official := &ProviderEntry{
+			Name:              "deepseek",
+			Kind:              endpoint.kind,
+			BaseURL:           endpoint.baseURL,
+			Model:             "deepseek-v4-pro",
+			Vision:            true,
+			ReasoningProtocol: ReasoningProtocolDeepSeek,
+		}
+		if EffectiveVision(official) {
+			t.Fatalf("official DeepSeek endpoint %q must remain text-only", endpoint.baseURL)
+		}
+		if ExplicitModelVision(official) {
+			t.Fatalf("provider-wide vision must not count as an explicit model capability for %q", endpoint.baseURL)
+		}
+	}
+
+	future := &ProviderEntry{
+		Name:         "deepseek",
+		Kind:         "openai",
+		BaseURL:      "https://api.deepseek.com",
+		Model:        "deepseek-v5-vision",
+		VisionModels: []string{"deepseek-v5-vision"},
+	}
+	if !EffectiveVision(future) || !ExplicitModelVision(future) {
+		t.Fatal("model listed in vision_models must opt in on the official DeepSeek endpoint")
+	}
+
+	visionOn := true
+	cfg := &Config{Providers: []ProviderEntry{{
+		Name:    "deepseek",
+		Kind:    "openai",
+		BaseURL: "https://api.deepseek.com",
+		Models:  []string{"deepseek-v5-override"},
+		ModelOverrides: map[string]ProviderModelOverride{
+			"deepseek-v5-override": {Vision: &visionOn},
+		},
+	}}}
+	overridden, ok := cfg.ResolveModel("deepseek/deepseek-v5-override")
+	if !ok {
+		t.Fatal("ResolveModel did not find explicit future DeepSeek model")
+	}
+	if !EffectiveVision(overridden) || !ExplicitModelVision(overridden) {
+		t.Fatal("model_overrides vision=true must opt in on the official DeepSeek endpoint")
+	}
+
+	custom := &ProviderEntry{
+		Name:              "deepseek-gateway",
+		Kind:              "openai",
+		BaseURL:           "https://gateway.example/v1",
+		Model:             "deepseek-v4-pro",
+		Vision:            true,
+		ReasoningProtocol: ReasoningProtocolDeepSeek,
+	}
+	if !EffectiveVision(custom) {
+		t.Fatal("explicit vision=true must remain available for custom DeepSeek gateways")
+	}
+}
+
 func TestEffectiveVisionUsesPerModelVisionList(t *testing.T) {
 	c := &Config{Providers: []ProviderEntry{{
 		Name:         "custom",
@@ -748,6 +870,7 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 		Models:            []string{"deepseek-v4-flash", "plain-chat"},
 		Default:           "plain-chat",
 		ContextWindow:     131_072,
+		MaxOutputTokens:   8_192,
 		ReasoningProtocol: ReasoningProtocolOpenAI,
 		SupportedEfforts:  []string{"low", "medium", "high"},
 		ModelOverrides: map[string]ProviderModelOverride{
@@ -757,6 +880,7 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 				DefaultEffort:     "max",
 				Vision:            &visionOff,
 				ContextWindow:     1_000_000,
+				MaxOutputTokens:   32_768,
 			},
 		},
 	}}}
@@ -778,6 +902,9 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 	if deepseek.ContextWindow != 1_000_000 {
 		t.Fatalf("deepseek context window = %d, want per-model override", deepseek.ContextWindow)
 	}
+	if deepseek.MaxOutputTokens != 32_768 {
+		t.Fatalf("deepseek max output tokens = %d, want per-model override", deepseek.MaxOutputTokens)
+	}
 
 	plain, ok := c.ResolveModel("gateway/plain-chat")
 	if !ok {
@@ -788,6 +915,9 @@ func TestResolveModelAppliesModelOverrides(t *testing.T) {
 	}
 	if plain.ContextWindow != 131_072 {
 		t.Fatalf("plain context window = %d, want inherited provider value", plain.ContextWindow)
+	}
+	if plain.MaxOutputTokens != 8_192 {
+		t.Fatalf("plain max output tokens = %d, want inherited provider value", plain.MaxOutputTokens)
 	}
 }
 
@@ -959,6 +1089,9 @@ func TestPluginMutators(t *testing.T) {
 	}
 	if err := c.UpsertPlugin(PluginEntry{Name: "bad", Command: "x", CallTimeoutSeconds: -1}); err == nil {
 		t.Error("negative call_timeout_seconds should error")
+	}
+	if err := c.UpsertPlugin(PluginEntry{Name: "bad", Command: "x", StartupTimeoutSeconds: -1}); err == nil {
+		t.Error("negative startup_timeout_seconds should error")
 	}
 	if err := c.UpsertPlugin(PluginEntry{Name: "bad", Command: "x", ToolTimeoutSeconds: map[string]int{"generate": -1}}); err == nil {
 		t.Error("negative tool_timeout_seconds should error")
@@ -2380,7 +2513,7 @@ func TestEffortCapabilityUsesKnownModelRegistry(t *testing.T) {
 	if !cap.Supported {
 		t.Fatalf("deepseek model behind proxy should expose effort, got %+v", cap)
 	}
-	wantLevels := []string{"auto", "disabled", "high", "max"}
+	wantLevels := []string{"auto", "disabled", "low", "high", "max"}
 	if len(cap.Levels) != len(wantLevels) {
 		t.Fatalf("levels = %v, want %v", cap.Levels, wantLevels)
 	}
@@ -2397,6 +2530,9 @@ func TestEffortCapabilityUsesKnownModelRegistry(t *testing.T) {
 	}
 	if got, err := NormalizeEffort(e, "max"); err != nil || got != "max" {
 		t.Fatalf("NormalizeEffort(max) = %q/%v, want max/nil", got, err)
+	}
+	if got, err := NormalizeEffort(e, "low"); err != nil || got != "low" {
+		t.Fatalf("NormalizeEffort(low) = %q/%v, want low/nil", got, err)
 	}
 }
 

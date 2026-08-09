@@ -57,6 +57,10 @@ type approvalManager struct {
 	// requestApproval): Sink implementations must not block and must not call
 	// back into Ask or the tool-approval chain, or they deadlock the prompt.
 	promptMu sync.Mutex
+	// promptEmitMu serializes prompt registration and emission with an SSE
+	// attach handoff. It is separate from promptMu because promptMu remains
+	// held while waiting for the user's answer.
+	promptEmitMu sync.Mutex
 }
 
 func newApprovalManager(policy permission.Policy, mode string, timeout time.Duration) approvalManager {
@@ -71,10 +75,10 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 	}
 }
 
-// NewHeadlessPermissionGate builds the non-interactive gate used during boot and
-// by sub-agents. It preserves headless autonomy for ordinary Ask decisions, but
-// refuses fresh-human tools unless the owning Controller later installs a
-// scoped low-risk evaluator on the parent executor.
+// NewHeadlessPermissionGate builds the legacy bootstrap gate used before a
+// frontend declares its approval posture. Interactive frontends replace it
+// before running; callers that are actually headless must pass a non-empty mode
+// through BuildHeadlessApprovalGate.
 func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate {
 	return &freshHumanHeadlessGate{gate: permission.NewGate(policy, nil)}
 }
@@ -86,10 +90,16 @@ func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate
 // the `task`/`read_only_task` sub-agent, writer-capable skill sub-agents
 // (run_skill/install_skill), and the planner runner — so all of them share the
 // CLI-selected headless approval mode instead of only the parent executor
-// getting it while the rest silently keep the mode-unaware default (ask
-// resolves to allow), which let a task sub-agent run a write an explicit ask
+// getting it while the rest silently keep the mode-unaware default, which let
+// a task sub-agent run a write an explicit ask
 // rule was supposed to deny under auto.
 func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHumanHeadlessGate {
+	// An empty mode is the boot-time placeholder used by interactive frontends
+	// before they install their real gate. Keep that compatibility path distinct
+	// from an explicit headless Ask posture, which has nobody to approve it.
+	if strings.TrimSpace(mode) == "" {
+		return NewHeadlessPermissionGate(policy)
+	}
 	switch normalizeToolApprovalMode(mode) {
 	case ToolApprovalYolo:
 		policy.Mode = permission.Allow
@@ -101,7 +111,8 @@ func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHuma
 		policy.Mode = permission.Deny
 		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	default:
-		return NewHeadlessPermissionGate(policy)
+		policy.Mode = permission.Ask
+		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
 	}
 }
 
@@ -220,19 +231,31 @@ func (a *approvalManager) preApprovedForRequiredHuman(tool, subject string) bool
 // register allocates an approval ID, records the pending prompt, and returns the
 // reply channel the resolve path will signal.
 func (a *approvalManager) register(tool, subject, reason string) (string, chan approvalReply) {
-	return a.registerDecision(tool, subject, reason, false, false)
+	return a.registerWithInput(tool, subject, reason, nil)
+}
+
+func (a *approvalManager) registerWithInput(tool, subject, reason string, rawInput json.RawMessage) (string, chan approvalReply) {
+	return a.registerDecisionWithInput(tool, subject, reason, rawInput, false, false)
 }
 
 // registerDecision allocates an approval ID for either an ordinary tool
 // permission or a fresh user decision. Fresh decisions are not auto-drained when
 // the user switches to auto/yolo tool approval while the prompt is visible.
 func (a *approvalManager) registerDecision(tool, subject, reason string, fresh, requireHuman bool) (string, chan approvalReply) {
-	return a.registerDecisionKind(tool, subject, reason, fresh, requireHuman, "", nil)
+	return a.registerDecisionWithInput(tool, subject, reason, nil, fresh, requireHuman)
+}
+
+func (a *approvalManager) registerDecisionWithInput(tool, subject, reason string, rawInput json.RawMessage, fresh, requireHuman bool) (string, chan approvalReply) {
+	return a.registerDecisionKindWithInput(tool, subject, reason, rawInput, fresh, requireHuman, "", nil)
 }
 
 // registerDecisionKind is registerDecision with optional Kind/Recovery payload
 // so Auto Guard cards survive ReplayPendingPrompts.
 func (a *approvalManager) registerDecisionKind(tool, subject, reason string, fresh, requireHuman bool, kind string, rec *event.RecoveryApproval) (string, chan approvalReply) {
+	return a.registerDecisionKindWithInput(tool, subject, reason, nil, fresh, requireHuman, kind, rec)
+}
+
+func (a *approvalManager) registerDecisionKindWithInput(tool, subject, reason string, rawInput json.RawMessage, fresh, requireHuman bool, kind string, rec *event.RecoveryApproval) (string, chan approvalReply) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
@@ -243,7 +266,8 @@ func (a *approvalManager) registerDecisionKind(tool, subject, reason string, fre
 		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
 	}
 	a.approvals[id] = pendingApproval{
-		tool: tool, subject: subject, reason: reason, fresh: fresh, requireHuman: requireHuman,
+		id:   id,
+		tool: tool, subject: subject, reason: reason, rawInput: append(json.RawMessage(nil), rawInput...), fresh: fresh, requireHuman: requireHuman,
 		autoDrain: autoDrain, kind: kind, recovery: rec, reply: reply,
 	}
 	return id, reply
@@ -326,6 +350,20 @@ func (a *approvalManager) resolve(id string) pendingApproval {
 	p := a.approvals[id]
 	delete(a.approvals, id)
 	return p
+}
+
+// resolveTool removes id only when it belongs to the expected specialized
+// decision surface. A mismatched bridge call must not consume another approval
+// type that happens to share the same short numeric id.
+func (a *approvalManager) resolveTool(id, tool string) (pendingApproval, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p, ok := a.approvals[id]
+	if !ok || p.tool != tool {
+		return pendingApproval{}, false
+	}
+	delete(a.approvals, id)
+	return p, true
 }
 
 // registerAsk allocates an ask ID, records the pending question batch, and
@@ -431,7 +469,7 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	approvals := make([]event.Approval, 0, len(a.approvals))
 	for id, p := range a.approvals {
 		approvals = append(approvals, event.Approval{
-			ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, Fresh: p.fresh,
+			ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, RawInput: append(json.RawMessage(nil), p.rawInput...), Fresh: p.fresh,
 			Kind: p.kind, Recovery: p.recovery,
 		})
 	}
@@ -537,7 +575,7 @@ func normalizeToolApprovalMode(mode string) string {
 // narrow operation in interactive or headless mode.
 func RequiresFreshHumanApprovalTool(tool string) bool {
 	switch tool {
-	case planApprovalTool, memoryRememberTool, memoryForgetTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool:
+	case planApprovalTool, memoryRememberTool, memoryForgetTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool, planLockReviewTool, planChangeReviewTool:
 		return true
 	default:
 		return false
