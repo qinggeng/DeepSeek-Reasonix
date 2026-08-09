@@ -27,9 +27,15 @@ func HandleApprove(ctrl DesktopControl) gateway.HandlerFunc {
 		}
 
 		if err := ctrl.Approve(id, req); err != nil {
-			if isTopicNotFound(err) {
+			switch {
+			case isTopicNotFound(err):
 				gateway.WriteError(w, http.StatusNotFound, err.Error())
-			} else {
+			case isApprovalNotFound(err):
+				// Unknown/consumed approval id: surface a 404 so clients can
+				// distinguish a real decision from a no-op (Sprint 11 HTTP
+				// interface improvement — E2E id probing relies on it).
+				gateway.WriteError(w, http.StatusNotFound, err.Error())
+			default:
 				gateway.WriteError(w, http.StatusInternalServerError, err.Error())
 			}
 			return

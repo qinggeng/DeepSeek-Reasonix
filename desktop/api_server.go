@@ -231,6 +231,15 @@ func (c *appControl) SubmitPrompt(topicID, input string) (string, error) {
 		c.hub.Unregister(streamID)
 		return "", fmt.Errorf("topic not ready: %s", topicID)
 	}
+	// Sprint 11 HTTP interface improvement: a fresh SSE client must see any
+	// approval/ask prompt that is already registered (e.g. a tool approval that
+	// landed before this stream attached, or was dropped on a full hub buffer).
+	// The desktop frontend gets this replay on attach (tabs.go); the HTTP API
+	// path now does the same so pending prompts are never invisible to API
+	// clients — without it the run blocks on a prompt the client never sees.
+	// Scoped to this tab only: a multi-tab session must not leak another tab's
+	// approval card into this client's stream.
+	c.app.ReplayPendingPromptsToForTab(tabID, sink)
 
 	return streamID, nil
 }
@@ -455,8 +464,7 @@ func (c *appControl) Approve(topicID string, req api.ApproveRequest) error {
 	if tabID == "" {
 		return fmt.Errorf("topic not found: %s", topicID)
 	}
-	c.app.ApproveTabWithOpinion(tabID, req.ID, req.Allow, req.Session, req.Persist, req.Opinion)
-	return nil
+	return c.app.ApproveTabWithOpinion(tabID, req.ID, req.Allow, req.Session, req.Persist, req.Opinion)
 }
 
 func (c *appControl) AnswerQuestion(topicID string, req api.AnswerRequest) error {

@@ -540,6 +540,17 @@ func isTopicNotFound(err error) bool {
 	return strings.Contains(err.Error(), "topic not found")
 }
 
+// isApprovalNotFound reports whether the error means the approval id is
+// unknown or already consumed (as opposed to a transport/internal failure).
+// Sprint 11 HTTP interface improvement: the approve endpoint must let clients
+// distinguish "decision made" from "no such prompt".
+func isApprovalNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "is not pending")
+}
+
 // isTurnRunningError checks if the error indicates a running turn prevents the operation.
 func isTurnRunningError(err error) bool {
 	if err == nil {

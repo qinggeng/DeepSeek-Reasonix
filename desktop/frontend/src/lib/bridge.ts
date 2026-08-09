@@ -207,6 +207,9 @@ export interface AppBindings {
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   AnswerQuestionForTab(tabID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
   ReplayPendingPrompts(): Promise<void>;
+  // Re-emits pending approval/ask prompts to one event sink (Sprint 11 HTTP
+  // API reliability: new SSE streams see prompts registered before attach).
+  ReplayPendingPromptsTo(sink: unknown): Promise<void>;
   SetPlanMode(on: boolean): Promise<void>;
   SetMode(mode: string): Promise<void>;
   // Resolves with the pending approval prompt ids the switch auto-allowed
@@ -2749,6 +2752,7 @@ function makeMockApp(): AppBindings {
           await withMockTabScope(_tabID, () => this.AnswerQuestion(id, answers));
         },
         async ReplayPendingPrompts() {},
+        async ReplayPendingPromptsTo() {},
         async ConfirmAction(req) {
           void req;
           return false;

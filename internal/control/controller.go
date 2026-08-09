@@ -2154,8 +2154,10 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 // ApproveWithOpinion is Approve plus an optional review opinion attached to the
 // decision (Sprint 11 A3). Plan reviews surface a non-empty opinion to the
 // model (plan rejection feedback / change-denial turn / lock notice); an empty
-// opinion is exactly the legacy behavior.
-func (c *Controller) ApproveWithOpinion(id string, allow, session, persist bool, opinion string) {
+// opinion is exactly the legacy behavior. It returns an error when the id is
+// unknown or already consumed so API clients can distinguish a real decision
+// from a no-op (Sprint 11 HTTP interface improvement).
+func (c *Controller) ApproveWithOpinion(id string, allow, session, persist bool, opinion string) error {
 	opinion = strings.TrimSpace(opinion)
 	// Recovery cards are strict fresh decisions. Prefer ResolveRecovery so a
 	// continue/deny from an old client that only knows Approve still maps onto
@@ -2174,11 +2176,11 @@ func (c *Controller) ApproveWithOpinion(id string, allow, session, persist bool,
 			action = agent.RecoveryActionContinue
 		}
 		_ = c.ResolveRecovery(id, action, "")
-		return
+		return nil
 	}
 	pending := c.approval.resolve(id)
 	if pending.reply == nil {
-		return
+		return fmt.Errorf("approval %q is not pending", id)
 	}
 	outcome := "deny"
 	if pending.tool == planApprovalTool {
@@ -2198,6 +2200,7 @@ func (c *Controller) ApproveWithOpinion(id string, allow, session, persist bool,
 	}
 	c.recordDecisionReceipt(pending, outcome)
 	pending.reply <- approvalReply{allow: allow, session: session, persist: persist, opinion: opinion} // buffered, never blocks
+	return nil
 }
 
 // ResolvePlanDecision answers the Plan card without collapsing revise and exit

@@ -444,3 +444,42 @@ func TestApproveRequestOpinionOmitempty(t *testing.T) {
 		t.Fatalf("non-empty opinion must ride the wire JSON, got %s", raw2)
 	}
 }
+
+// --- TC-8: 审批——approval id 未知/已消费（Sprint 11 HTTP 接口改进）---
+// 客户端（E2E 递增试探）必须能区分"审批已消费"与"id 无效"：未知 id 返回 404。
+
+func TestHandleApprove_ApprovalNotFound(t *testing.T) {
+	ctrl := &mockControl{
+		approveFn: func(topicID string, req ApproveRequest) error {
+			return fmt.Errorf("approval %q is not pending", req.ID)
+		},
+	}
+
+	body := jsonBody(t, ApproveRequest{ID: "ghost-999", Allow: true})
+	req := httptest.NewRequest(http.MethodPost, chatURL("topic-dev", "approve"), strings.NewReader(body))
+	w := httptest.NewRecorder()
+	HandleApprove(ctrl)(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown approval id, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+// --- TC-9: 审批——内部错误保持 500（不被误判为 not found）---
+
+func TestHandleApprove_InternalError(t *testing.T) {
+	ctrl := &mockControl{
+		approveFn: func(topicID string, req ApproveRequest) error {
+			return fmt.Errorf("boom: decision channel broken")
+		},
+	}
+
+	body := jsonBody(t, ApproveRequest{ID: "appr-001", Allow: true})
+	req := httptest.NewRequest(http.MethodPost, chatURL("topic-dev", "approve"), strings.NewReader(body))
+	w := httptest.NewRecorder()
+	HandleApprove(ctrl)(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for internal error, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}

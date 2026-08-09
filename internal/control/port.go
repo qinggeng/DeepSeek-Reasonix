@@ -77,8 +77,10 @@ type TurnControl interface {
 type Approvals interface {
 	Approve(id string, allow, session, persist bool)
 	// ApproveWithOpinion is Approve plus an optional review opinion (Sprint 11
-	// A3); an empty opinion is exactly the legacy Approve behavior.
-	ApproveWithOpinion(id string, allow, session, persist bool, opinion string)
+	// A3); an empty opinion is exactly the legacy Approve behavior. It returns
+	// an error when the id is unknown or already consumed so API clients can
+	// distinguish a real decision from a no-op.
+	ApproveWithOpinion(id string, allow, session, persist bool, opinion string) error
 	ResolvePlanDecision(id string, action PlanDecisionAction) error
 	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
 	// refuses the mutation and steers feedback.

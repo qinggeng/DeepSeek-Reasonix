@@ -590,3 +590,27 @@ func TestLockReviewApproveCarriesOpinion(t *testing.T) {
 		t.Fatalf("stage = %q, want locked", rs.Stage)
 	}
 }
+
+// TC-A3-09 Sprint 11 HTTP 接口改进：未知/已消费审批 id 的
+// ApproveWithOpinion 返回 error（客户端可据此区分 404 与成功）。
+func TestApproveWithOpinionUnknownIDReturnsError(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) { submitPlan(t, h.store, "plan-001") },
+	}, func(event.Event) bool { return true })
+	h.runStrictPlan("task")
+	// plan-001 已锁定（评审被批准，审批 id 已消费）：未知 id 必须报错。
+	if err := h.c.ApproveWithOpinion("ghost-approval", true, false, false, "意见"); err == nil {
+		t.Fatal("ApproveWithOpinion on unknown id must return an error")
+	} else if !strings.Contains(err.Error(), "is not pending") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 已消费的评审 id 再次批准同样报错（不静默成功）。
+	if len(h.approvals) == 0 {
+		t.Fatal("expected at least one plan_lock_review approval event")
+	}
+	consumed := h.approvals[0].Approval.ID
+	if err := h.c.ApproveWithOpinion(consumed, true, false, false, ""); err == nil {
+		t.Fatalf("ApproveWithOpinion on consumed id %q must return an error", consumed)
+	}
+}

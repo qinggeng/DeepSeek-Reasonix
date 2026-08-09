@@ -1817,16 +1817,19 @@ func (a *App) Approve(id string, allow, session, persist bool) {
 // ApproveTab is like Approve but scoped to a specific tab. It is the legacy
 // no-opinion entry; ApproveTabWithOpinion carries the Sprint 11 A3 opinion.
 func (a *App) ApproveTab(tabID, id string, allow, session, persist bool) {
-	a.ApproveTabWithOpinion(tabID, id, allow, session, persist, "")
+	_ = a.ApproveTabWithOpinion(tabID, id, allow, session, persist, "")
 }
 
 // ApproveTabWithOpinion is ApproveTab plus an optional review opinion (Sprint
-// 11 A3): plan reviews surface a non-empty opinion to the model.
-func (a *App) ApproveTabWithOpinion(tabID, id string, allow, session, persist bool, opinion string) {
+// 11 A3): plan reviews surface a non-empty opinion to the model. It returns an
+// error when the approval id is unknown/consumed or the tab has no live
+// controller, so the HTTP API can surface a 404 instead of a silent no-op.
+func (a *App) ApproveTabWithOpinion(tabID, id string, allow, session, persist bool, opinion string) error {
 	ctrl := a.ctrlForRuntimeTabID(tabID)
-	if ctrl != nil {
-		ctrl.ApproveWithOpinion(id, allow, session, persist, opinion)
+	if ctrl == nil {
+		return fmt.Errorf("no live controller for tab %s", tabID)
 	}
+	return ctrl.ApproveWithOpinion(id, allow, session, persist, opinion)
 }
 
 // ResolvePlanDecision answers a Plan card while preserving whether the user
@@ -1900,6 +1903,36 @@ func (a *App) ReplayPendingPrompts() {
 	a.mu.RUnlock()
 	for _, ctrl := range ctrls {
 		ctrl.ReplayPendingPrompts()
+	}
+}
+
+// ReplayPendingPromptsTo re-emits every tab's pending approval/ask prompts to
+// one sink. The desktop HTTP API uses this right after attaching a new SSE
+// stream so a fresh client immediately sees prompts that were registered
+// before its connection (Sprint 11 HTTP interface improvement).
+func (a *App) ReplayPendingPromptsTo(sink event.Sink) {
+	a.mu.RLock()
+	tabs := a.runtimeTabsLocked()
+	ctrls := make([]control.SessionAPI, 0, len(tabs))
+	for _, t := range tabs {
+		if t.Ctrl != nil {
+			ctrls = append(ctrls, t.Ctrl)
+		}
+	}
+	a.mu.RUnlock()
+	for _, ctrl := range ctrls {
+		ctrl.ReplayPendingPromptsTo(sink)
+	}
+}
+
+// ReplayPendingPromptsToForTab re-emits the pending approval/ask prompts of
+// one tab to one sink. The HTTP API's SubmitPrompt replays only the submitted
+// topic's prompts so a client never sees — or accidentally answers — another
+// tab's approval card in a multi-tab session.
+func (a *App) ReplayPendingPromptsToForTab(tabID string, sink event.Sink) {
+	ctrl := a.ctrlForRuntimeTabID(tabID)
+	if ctrl != nil {
+		ctrl.ReplayPendingPromptsTo(sink)
 	}
 }
 
