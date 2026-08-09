@@ -102,6 +102,10 @@ type strictPlanHarness struct {
 	store     *planstore.Store
 	events    []event.Event
 	approvals []event.Event // plan_lock_review ApprovalRequest events, in order
+	// opinionResponder (A3), when set, answers every plan_lock_review /
+	// plan_change_review with (allow, opinion) through ApproveWithOpinion,
+	// replacing the plain bool responder.
+	opinionResponder func(e event.Event) (bool, string)
 }
 
 func newStrictPlanHarness(t *testing.T, scripts []func(input string), reviewResponder func(e event.Event) bool) *strictPlanHarness {
@@ -133,8 +137,17 @@ func newStrictPlanHarnessGit(t *testing.T, scripts []func(input string), reviewR
 		if isReview {
 			h.approvals = append(h.approvals, e)
 		}
+		opinionResponder := h.opinionResponder
 		h.mu.Unlock()
-		if isReview && reviewResponder != nil {
+		if !isReview {
+			return
+		}
+		if opinionResponder != nil {
+			allow, opinion := opinionResponder(e)
+			go c.ApproveWithOpinion(e.Approval.ID, allow, false, false, opinion)
+			return
+		}
+		if reviewResponder != nil {
 			allow := reviewResponder(e)
 			go c.Approve(e.Approval.ID, allow, false, false)
 		}
@@ -182,6 +195,15 @@ func (h *strictPlanHarness) approvalCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.approvals)
+}
+
+// setOpinionResponder installs an opinion-carrying review responder (A3), which
+// takes precedence over the plain bool responder: every plan review is answered
+// through ApproveWithOpinion with the returned (allow, opinion).
+func (h *strictPlanHarness) setOpinionResponder(fn func(e event.Event) (bool, string)) {
+	h.mu.Lock()
+	h.opinionResponder = fn
+	h.mu.Unlock()
 }
 
 // firstReviewEvent returns the first plan_lock_review ApprovalRequest event in
@@ -493,6 +515,77 @@ func TestInvalidSubmissionThenReworkLocks(t *testing.T) {
 		t.Fatalf("runner calls = %d, want 2 (failed attempt + rework)", h.runner.runCount)
 	}
 	rs, _ := h.store.ReadRunState("plan-fixed")
+	if rs.Stage != planstore.StageLocked {
+		t.Fatalf("stage = %q, want locked", rs.Stage)
+	}
+}
+
+// TC-A3-01 锁计划拒绝带意见：planRejectedMessage 注入合成轮含"审核意见"段与
+// 意见原文，模型可据此修订重提。
+func TestLockReviewRejectCarriesOpinion(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) { submitPlan(t, h.store, "plan-001") },
+		func(input string) {
+			if !strings.Contains(input, "审核意见") || !strings.Contains(input, "脚本断言太弱，需覆盖负例") {
+				t.Errorf("rejected-with-opinion turn must carry the opinion, got %.400s", input)
+			}
+		},
+	}, nil)
+	h.setOpinionResponder(func(e event.Event) (bool, string) {
+		return false, "脚本断言太弱，需覆盖负例"
+	})
+	if err := h.runStrictPlan("task"); err != nil {
+		t.Fatalf("runStrictPlan: %v", err)
+	}
+	rs, _ := h.store.ReadRunState("plan-001")
+	if rs.Stage != planstore.StageRejected {
+		t.Fatalf("stage = %q, want rejected", rs.Stage)
+	}
+}
+
+// TC-A3-02 拒绝意见为空（fail-safe）：注入消息与现状完全一致（无"审核意见"
+// 段）；旧签名 Approve 与空意见 ApproveWithOpinion 行为相同。
+func TestLockReviewRejectWithoutOpinionMatchesLegacy(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) { submitPlan(t, h.store, "plan-001") },
+		func(input string) {
+			if strings.Contains(input, "审核意见") {
+				t.Errorf("empty-opinion rejection must not inject an opinion section, got %.400s", input)
+			}
+			if !strings.Contains(input, "did not pass review and was rejected") {
+				t.Errorf("legacy rejection copy must be preserved, got %.400s", input)
+			}
+		},
+	}, nil)
+	h.setOpinionResponder(func(e event.Event) (bool, string) { return false, "" })
+	if err := h.runStrictPlan("task"); err != nil {
+		t.Fatalf("runStrictPlan: %v", err)
+	}
+}
+
+// TC-A3-03 锁计划批准带意见：锁定 Notice 含"审核意见"段；批准语义与锁定产物
+// 不变（E2E/单测依赖的 locked 文案子串保留）。
+func TestLockReviewApproveCarriesOpinion(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) { submitPlan(t, h.store, "plan-001") },
+	}, nil)
+	h.setOpinionResponder(func(e event.Event) (bool, string) { return true, "范围合理，开始执行" })
+	if err := h.runStrictPlan("task"); err != nil {
+		t.Fatalf("runStrictPlan: %v", err)
+	}
+	if !h.hasNotice("strict-plan: plan-id=plan-001 locked") {
+		t.Fatal("locked notice must keep the legacy plan-id=... locked substring")
+	}
+	if !h.hasNotice("计划制定阶段结束") {
+		t.Fatal("B1: locked notice must explicitly signal the plan-stage end")
+	}
+	if !h.hasNotice("审核意见：范围合理，开始执行") {
+		t.Fatal("approved-with-opinion lock must surface the opinion in the locked notice")
+	}
+	rs, _ := h.store.ReadRunState("plan-001")
 	if rs.Stage != planstore.StageLocked {
 		t.Fatalf("stage = %q, want locked", rs.Stage)
 	}

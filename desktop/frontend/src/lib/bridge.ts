@@ -194,6 +194,7 @@ export interface AppBindings {
   CancelTab(tabID: string): Promise<void>;
   Approve(id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ApproveTab(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
+  ApproveTabWithOpinion(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean, opinion: string): Promise<void>;
   ResolvePlanDecision(id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
   ResolvePlanDecisionTab(tabID: string, id: string, action: "start_execution" | "revise_plan" | "exit_plan"): Promise<void>;
   ResolveRecovery(id: string, action: string, feedback: string): Promise<void>;
@@ -2691,6 +2692,9 @@ function makeMockApp(): AppBindings {
           emitMockTurnDone();
         },
         async ApproveTab(_tabID, id, allow, session, persist) {
+          await withMockTabScope(_tabID, () => this.Approve(id, allow, session, persist));
+        },
+        async ApproveTabWithOpinion(_tabID, id, allow, session, persist, _opinion) {
           await withMockTabScope(_tabID, () => this.Approve(id, allow, session, persist));
         },
         async ResolvePlanDecision(id, action) {

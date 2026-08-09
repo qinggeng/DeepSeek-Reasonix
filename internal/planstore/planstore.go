@@ -24,6 +24,21 @@ const (
 	// prefix in the scope already covers everything below it recursively, so a
 	// huge list is a smell and is hard to review.
 	DefaultMaxEntries = 50
+
+	// DefaultMaxScriptOutput is the acceptance-script feedback threshold in
+	// bytes (Sprint 11 A1): outputs at or below it are injected into the next
+	// turn whole (the pre-Sprint-11 behavior); larger outputs are summarized
+	// (head lines + line count + error lines) with the full output spilled to
+	// a file under .reasonix/acceptance-output/ that the model's bash sandbox
+	// can read, and the summary names that file. Configurable per store
+	// (Store.MaxScriptOutput) so tests inject a small value.
+	DefaultMaxScriptOutput = 8192
+
+	// DefaultSummaryHeadLines / DefaultSummaryErrorLines bound the summary
+	// injected for an oversized script output: the first N lines and up to M
+	// error-pattern lines. Configurable per store for tests.
+	DefaultSummaryHeadLines  = 40
+	DefaultSummaryErrorLines = 30
 )
 
 // Store is the encrypted plan store bound to one workspace. It holds the
@@ -41,6 +56,17 @@ type Store struct {
 	// counts (default DefaultMaxEntries). Exposed for tests to inject a small
 	// cap; production always gets the default via Open.
 	MaxEntries int
+
+	// MaxScriptOutput caps the acceptance-script feedback that is injected
+	// whole (bytes); larger outputs are summarized and spilled to
+	// .reasonix/acceptance-output/ (default DefaultMaxScriptOutput).
+	MaxScriptOutput int
+
+	// SummaryHeadLines / SummaryErrorLines bound the injected summary for an
+	// oversized acceptance-script output (defaults DefaultSummaryHeadLines /
+	// DefaultSummaryErrorLines).
+	SummaryHeadLines  int
+	SummaryErrorLines int
 }
 
 // masterKeyPath resolves <reasonix home>/master.key. The resolution mirrors
@@ -106,12 +132,15 @@ func Open(wsRoot string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{
-		wsRoot:     ws,
-		homeDir:    filepath.Dir(mkPath),
-		projectKey: projectKey,
-		plansDir:   plansDir,
-		keysDir:    keysDir,
-		MaxEntries: DefaultMaxEntries,
+		wsRoot:            ws,
+		homeDir:           filepath.Dir(mkPath),
+		projectKey:        projectKey,
+		plansDir:          plansDir,
+		keysDir:           keysDir,
+		MaxEntries:        DefaultMaxEntries,
+		MaxScriptOutput:   DefaultMaxScriptOutput,
+		SummaryHeadLines:  DefaultSummaryHeadLines,
+		SummaryErrorLines: DefaultSummaryErrorLines,
 	}, nil
 }
 

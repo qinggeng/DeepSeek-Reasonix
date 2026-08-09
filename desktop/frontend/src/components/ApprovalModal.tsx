@@ -67,6 +67,9 @@ export function approvalToolLabel(tool: string, t: Translator): string {
       return t("approval.toolLabelPlanModeReadOnly");
     case "exit_plan_mode":
       return t("approval.toolLabelExitPlan");
+    case "plan_lock_review":
+    case "plan_change_review":
+      return t("approval.toolLabelPlanReview");
     default:
       return tool;
   }
@@ -250,7 +253,7 @@ export function ApprovalModal({
   toolApprovalMode,
 }: {
   approval: WireApproval;
-  onAnswer: (allow: boolean, session: boolean, persist: boolean) => void;
+  onAnswer: (allow: boolean, session: boolean, persist: boolean, opinion?: string) => void;
   onResolveRecovery?: (action: "continue" | "continue_task" | "revise", feedback?: string) => void;
   onRevisePlan?: (text: string) => void;
   onExitPlan?: () => void;
@@ -264,6 +267,11 @@ export function ApprovalModal({
 }) {
   const t = useT();
   const isPlanApproval = approval.tool === "exit_plan_mode";
+  // Sprint 11 A3: the strict-plan reviews (plan_lock_review for locking,
+  // plan_change_review for mid-execution change requests) render as a compact
+  // allow/deny card with an optional review-opinion input.
+  const isPlanReviewApproval =
+    approval.tool === "plan_lock_review" || approval.tool === "plan_change_review";
   const isRecoveryApproval = approval.kind === "recovery" || Boolean(approval.recovery);
   const recovery = approval.recovery;
   const recoveryChangeKind = (recovery?.change_kind ?? "").toLowerCase();
@@ -302,6 +310,7 @@ export function ApprovalModal({
   const [descriptionTruncated, setDescriptionTruncated] = useState(false);
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionText, setRevisionText] = useState("");
+  const [opinionText, setOpinionText] = useState("");
   const [recoveryGuidanceOpen, setRecoveryGuidanceOpen] = useState(false);
   const [recoveryGuidanceText, setRecoveryGuidanceText] = useState("");
   const [grantSimilarForTask, setGrantSimilarForTask] = useState(false);
@@ -417,6 +426,25 @@ export function ApprovalModal({
             }]
           : []),
       ]
+    : isPlanReviewApproval
+    ? [
+        {
+          key: "1",
+          label: t("approval.planReviewAllow"),
+          desc: "",
+          primary: true,
+          kind: "submit" as const,
+          run: () => onAnswer(true, false, false, opinionText.trim()),
+        },
+        {
+          key: "2",
+          label: t("approval.deny"),
+          desc: t("approval.denyDesc"),
+          tone: "danger" as const,
+          kind: "submit" as const,
+          run: () => onAnswer(false, false, false, opinionText.trim()),
+        },
+      ]
     : [
         {
           key: "1",
@@ -493,11 +521,12 @@ export function ApprovalModal({
     cardRef.current?.focus();
     setRevisionOpen(false);
     setRevisionText("");
+    setOpinionText("");
     setRecoveryGuidanceOpen(false);
     setRecoveryGuidanceText("");
     setGrantSimilarForTask(false);
     setReasonOpen(isRecoveryApproval ? false : Boolean(reason) && reason.length <= 160);
-    setSelectedIndex(isPlanApproval || isRecoveryApproval ? -1 : 0);
+    setSelectedIndex(isPlanApproval || isRecoveryApproval ? -1 : isPlanReviewApproval ? 0 : 0);
     setSubmitting(false);
     closingRef.current = false;
   }, [approval.id, isPlanApproval, isRecoveryApproval, reason]);
@@ -940,6 +969,7 @@ export function ApprovalModal({
       >
         {(approvalModeRelaxed ||
           isRecoveryApproval ||
+          isPlanReviewApproval ||
           (!isPlanApproval && !isRecoveryApproval && (subject || (reasonOpen && reason))) ||
           (isPlanApproval && revisionOpen)) && (
           <>
@@ -1014,6 +1044,23 @@ export function ApprovalModal({
               <div className="approval-details">
                 <pre className="approval-subject">{subject}</pre>
                 {reasonOpen && reason && <div className="approval-reason">{reason}</div>}
+              </div>
+            )}
+            {isPlanReviewApproval && (
+              <div className="plan-review-opinion">
+                <label className="plan-review-opinion__label" htmlFor={`${instanceId}-opinion`}>
+                  {t("approval.opinionLabel")}
+                </label>
+                <textarea
+                  id={`${instanceId}-opinion`}
+                  className="plan-review-opinion__input plan-revision__input"
+                  value={opinionText}
+                  rows={2}
+                  maxLength={500}
+                  placeholder={t("approval.opinionLabel")}
+                  onChange={(event) => setOpinionText(event.target.value)}
+                  disabled={submitting}
+                />
               </div>
             )}
             {isPlanApproval && revisionOpen && (

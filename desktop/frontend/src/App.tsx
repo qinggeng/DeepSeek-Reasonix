@@ -235,6 +235,7 @@ function noticePreviewItems(): Item[] {
     level,
     text: localizedNoticeText(text, code),
     detail,
+    ...(code ? { code } : {}),
   });
   return [
     {
@@ -247,6 +248,8 @@ function noticePreviewItems(): Item[] {
       detail: "final-answer readiness failed 3 times: missing verification, review_report, and complete_step receipts",
       action: "continue_delivery",
     },
+    notice(27, "info", "strict-plan: plan-id=plan-001 locked — 计划制定阶段结束，可 /strict-plan-exec plan-001 开始执行", "plan lock review approved; baseline frozen at 3f7dbfff0", "strict_plan"),
+    notice(28, "info", "- plan-001 [locked] 已锁定 2026-08-09 16:40\n- plan-002 [failed] 重试耗尽 2026-08-09 16:55", "strict-plan-list output rides the same badge so it is not mistaken for the model's thinking", "strict_plan"),
     notice(1, "info", "No visible answer was produced; asking the assistant to respond again.", "empty final answer blocked: qwen3.7-plus returned no visible answer text (finish=stop, reasoning=2314 chars); retrying", "empty_final"),
     notice(2, "info", "The assistant answered before taking action; asking it to use the required tools.", "executor handoff: assistant produced a proposal before running required repository commands; nudged to execute", "executor_handoff"),
     notice(3, "info", "Tool round limit reached; asking the assistant to summarize progress.", "tool budget reached after 128 tool calls; requesting a progress summary before continuing", "tool_budget"),
@@ -5026,7 +5029,7 @@ export default function App() {
                 workspaceScopeKey={workspaceScopeKey}
                 insertRequest={activePlanRevisionInsertRequest}
                 onRevisionActiveChange={handleRevisionActiveChange}
-                onAnswer={async (allow, session, persist) => {
+                onAnswer={async (allow, session, persist, opinion = "") => {
                   // Approving an exit_plan_mode plan leaves plan mode; await the
                   // mode switch before sending the approval so the controller
                   // observes the updated state before it unblocks.
@@ -5039,7 +5042,7 @@ export default function App() {
                     }
                     return;
                   }
-                  approve(state.approval!.id, allow, session, persist);
+                  approve(state.approval!.id, allow, session, persist, opinion);
                 }}
                 onResolveRecovery={(action, feedback) => {
                   resolveRecovery(state.approval!.id, action, feedback ?? "");

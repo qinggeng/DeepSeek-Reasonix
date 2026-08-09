@@ -73,7 +73,7 @@ func (c *Controller) applyStrictPlanExec(input, display string) {
 	c.runGuarded(func(ctx context.Context) error {
 		store, err := planstore.Open(c.workspaceRoot)
 		if err != nil {
-			c.notice("strict-plan-exec: " + err.Error())
+			c.strictPlanNotice("strict-plan-exec: " + err.Error())
 			return nil
 		}
 		return c.runStrictPlanExec(ctx, store, id, display)
@@ -85,38 +85,38 @@ func (c *Controller) applyStrictPlanExec(input, display string) {
 // acceptance loop to done/failed.
 func (c *Controller) runStrictPlanExec(ctx context.Context, store *planstore.Store, id, display string) error {
 	if err := planstore.CheckGitWorkspace(store.WorkspaceRoot()); err != nil {
-		c.notice("strict-plan-exec: " + err.Error())
+		c.strictPlanNotice("strict-plan-exec: " + err.Error())
 		return nil
 	}
 	if id == "" {
 		locked, err := store.MostRecentLocked()
 		if err != nil {
-			c.notice("strict-plan-exec: " + err.Error())
+			c.strictPlanNotice("strict-plan-exec: " + err.Error())
 			return nil
 		}
 		id = locked
 	}
 	rs, err := store.ReadRunState(id)
 	if err != nil {
-		c.notice(fmt.Sprintf("strict-plan-exec: plan %q 不存在或不可读（%v）", id, err))
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan %q 不存在或不可读（%v）", id, err))
 		return nil
 	}
 	if rs.Stage != planstore.StageLocked {
-		c.notice(fmt.Sprintf("strict-plan-exec: plan %q 处于 %s 阶段，仅 locked 可执行（请先 /strict-plan 制定并批准）", id, rs.Stage))
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan %q 处于 %s 阶段，仅 locked 可执行（请先 /strict-plan 制定并批准）", id, rs.Stage))
 		return nil
 	}
 	// 同一工作区禁止并发执行（文件冲突风险）；不同工作区天然隔离。
 	executing, err := executingPlan(store)
 	if err != nil {
-		c.notice("strict-plan-exec: " + err.Error())
+		c.strictPlanNotice("strict-plan-exec: " + err.Error())
 		return nil
 	}
 	if executing != "" && executing != id {
-		c.notice(fmt.Sprintf("strict-plan-exec: 计划 %q 正在执行中（同工作区禁止并发执行），拒绝启动 %q", executing, id))
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: 计划 %q 正在执行中（同工作区禁止并发执行），拒绝启动 %q", executing, id))
 		return nil
 	}
 	if err := store.Transition(id, planstore.StageLocked, planstore.StageExecuting); err != nil {
-		c.notice("strict-plan-exec: " + err.Error())
+		c.strictPlanNotice("strict-plan-exec: " + err.Error())
 		return nil
 	}
 	if err := store.UpdateRunState(id, func(rs *planstore.RunState) {
@@ -128,7 +128,7 @@ func (c *Controller) runStrictPlanExec(ctx context.Context, store *planstore.Sto
 		// that would block every future execution (the driveExecLoop defer
 		// only covers errors raised after this point).
 		if terr := store.Transition(id, planstore.StageExecuting, planstore.StageFailed); terr == nil {
-			c.notice(fmt.Sprintf("strict-plan-exec: plan-id=%s failed — 初始化失败（%v），已停在失败态", id, err))
+			c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan-id=%s failed — 初始化失败（%v），已停在失败态", id, err))
 		}
 		return err
 	}
@@ -137,7 +137,7 @@ func (c *Controller) runStrictPlanExec(ctx context.Context, store *planstore.Sto
 	// active to enforce the scope.
 	ctx = planstore.WithStore(ctx, store)
 	ctx = planmode.WithStrict(ctx, true)
-	c.notice(fmt.Sprintf("strict-plan-exec: 计划 %s 开始执行（最多 %d 轮）", id, strictExecMaxRounds))
+	c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: 计划 %s 开始执行（最多 %d 轮）", id, strictExecMaxRounds))
 	return c.driveExecLoop(ctx, store, id, display)
 }
 
@@ -155,7 +155,7 @@ func (c *Controller) driveExecLoop(ctx context.Context, store *planstore.Store, 
 		if err != nil {
 			if rs, rerr := store.ReadRunState(id); rerr == nil && rs.Stage == planstore.StageExecuting {
 				if terr := store.Transition(id, planstore.StageExecuting, planstore.StageFailed); terr == nil {
-					c.notice(fmt.Sprintf("strict-plan-exec: plan-id=%s failed — 执行出错（%v），已停在失败态", id, err))
+					c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan-id=%s failed — 执行出错（%v），已停在失败态", id, err))
 				}
 			}
 		}
@@ -204,7 +204,7 @@ func (c *Controller) driveExecLoop(ctx context.Context, store *planstore.Store, 
 		if err := store.Verify(id); err != nil {
 			return err
 		}
-		res, err := store.RunAcceptanceScript(ctx, id)
+		res, err := store.RunAcceptanceScript(ctx, id, round)
 		if err != nil {
 			return err
 		}
@@ -217,7 +217,7 @@ func (c *Controller) driveExecLoop(ctx context.Context, store *planstore.Store, 
 			if err := store.Transition(id, planstore.StageExecuting, planstore.StageDone); err != nil {
 				return err
 			}
-			c.notice(fmt.Sprintf("strict-plan-exec: plan-id=%s done（轮次 %d）— 验收脚本 exit=0，变动清单无违规（越界 0 / 漏改 0）",
+			c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan-id=%s done（轮次 %d）— 验收脚本 exit=0，变动清单无违规（越界 0 / 漏改 0）",
 				id, round))
 			return nil
 		}
@@ -232,7 +232,7 @@ func (c *Controller) driveExecLoop(ctx context.Context, store *planstore.Store, 
 			if err := store.Transition(id, planstore.StageExecuting, planstore.StageFailed); err != nil {
 				return err
 			}
-			c.notice(fmt.Sprintf("strict-plan-exec: plan-id=%s failed — %d 轮重试耗尽，验收失败输出与最后实现状态已交还你处理（计划停在失败态；如需重新尝试请制定新计划）",
+			c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan-id=%s failed — %d 轮重试耗尽，验收失败输出与最后实现状态已交还你处理（计划停在失败态；如需重新尝试请制定新计划）",
 				id, round))
 			return nil
 		}
@@ -244,7 +244,7 @@ func (c *Controller) driveExecLoop(ctx context.Context, store *planstore.Store, 
 		}
 		retriesLeft := storeRetriesLeft(store, id)
 		lastFeedback = fmt.Sprintf(execRejectedMessage, round, retriesLeft, res.ExitCode, res.Output, renderComparison(comp))
-		c.notice(fmt.Sprintf("strict-plan-exec: 第 %d 轮未通过 — 验收脚本 exit=%d；变动清单：%s（下一轮 round=%d retriesLeft=%d）",
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: 第 %d 轮未通过 — 验收脚本 exit=%d；变动清单：%s（下一轮 round=%d retriesLeft=%d）",
 			round, res.ExitCode, renderComparisonBrief(comp), round+1, retriesLeft))
 	}
 }
@@ -292,13 +292,22 @@ func (c *Controller) handlePendingChange(ctx context.Context, store *planstore.S
 		if err := store.ApplyChange(id, pc, execInitialRetriesLeft); err != nil {
 			return false, err
 		}
-		c.notice(fmt.Sprintf("strict-plan-exec: plan-id=%s 变更已批准并应用（重试计数重置为 %d）", id, execInitialRetriesLeft))
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan-id=%s 变更已批准并应用（重试计数重置为 %d）", id, execInitialRetriesLeft))
 		return true, nil
 	}
 	if err := store.DenyChange(id); err != nil {
 		return false, err
 	}
-	c.notice(fmt.Sprintf("strict-plan-exec: plan-id=%s 变更请求被拒绝，继续按原验收标准执行", id))
+	c.strictPlanNotice(fmt.Sprintf("strict-plan-exec: plan-id=%s 变更请求被拒绝，继续按原验收标准执行", id))
+	// A3: a denial with a review opinion feeds the model a synthetic turn so it
+	// can respond to the guidance before the round is gated. An empty opinion
+	// keeps the legacy behavior (no extra turn, no burned round).
+	if r.opinion != "" {
+		msg := fmt.Sprintf("Your change request for plan %s was rejected — continue with the original acceptance standard.\n\n审核意见：%s", id, r.opinion)
+		if err := newTurnOrchestrator(c).runComposedSyntheticTurn(ctx, msg); err != nil {
+			return false, err
+		}
+	}
 	return false, nil
 }
 

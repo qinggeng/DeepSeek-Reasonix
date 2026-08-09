@@ -3574,6 +3574,29 @@ a[href] {
   background: color-mix(in srgb, var(--bg-soft) 76%, var(--bg-elev));
   border: 1px solid var(--border-soft);
 }
+.notice-line--strict-plan {
+  color: var(--fg-dim);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border-soft));
+}
+.notice-line--strict-plan .notice-line__icon {
+  color: var(--accent);
+  margin-top: 2px;
+}
+.notice-line__badge {
+  display: inline-block;
+  margin: 0 0 3px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 16px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 4px;
+  text-transform: uppercase;
+}
 .notice-line--delivery .notice-line__icon {
   color: var(--fg-faint);
   margin-top: 2px;
@@ -37676,4 +37699,20 @@ body > .mermaid-diagram--fullscreen {
     padding-right: 10px;
     gap: 4px;
   }
+}
+
+/* Sprint 11 A3: optional review-opinion input on plan review cards. Reuses the
+   plan-revision input visuals (.plan-revision__input) to stay within the
+   initial-CSS bundle budget. */
+.plan-review-opinion {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+.plan-review-opinion__label {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.plan-review-opinion__input {
+  min-height: 48px;
 }

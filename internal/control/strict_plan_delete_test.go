@@ -73,6 +73,19 @@ func writePlanAt(t *testing.T, h *strictPlanHarness, id string, stage planstore.
 		if err := h.store.Transition(id, planstore.StageExecuting, planstore.StageDone); err != nil {
 			t.Fatalf("Transition done: %v", err)
 		}
+	case planstore.StageFailed:
+		if err := h.store.Transition(id, planstore.StageDrafting, planstore.StageSubmitted); err != nil {
+			t.Fatalf("Transition submitted: %v", err)
+		}
+		if err := h.store.Transition(id, planstore.StageSubmitted, planstore.StageLocked); err != nil {
+			t.Fatalf("Transition locked: %v", err)
+		}
+		if err := h.store.Transition(id, planstore.StageLocked, planstore.StageExecuting); err != nil {
+			t.Fatalf("Transition executing: %v", err)
+		}
+		if err := h.store.Transition(id, planstore.StageExecuting, planstore.StageFailed); err != nil {
+			t.Fatalf("Transition failed: %v", err)
+		}
 	}
 }
 

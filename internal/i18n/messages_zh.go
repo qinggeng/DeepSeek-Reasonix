@@ -229,6 +229,7 @@ var Chinese = Messages{
 	CmdStrictPlanDetail: "查看严格计划完整详情（步骤、验收脚本、可写范围、变动清单）",
 	CmdStrictPlanList:   "列出严格计划（id + 阶段）；带 plan-id 时查看其详情",
 	CmdStrictPlanDelete: "按 id 删除严格计划（不可恢复；执行中禁止删除）",
+	CmdStrictPlanClear:  "批量清除全部终态严格计划（done/failed）；--yes 确认不可恢复的批量删除",
 	CmdStrictPlanExec:   "执行已锁定的严格计划：验收循环直至 done/failed",
 	CmdClear:            "丢弃当前上下文",
 	CmdCls:              "清屏（保留 LLM 上下文）",

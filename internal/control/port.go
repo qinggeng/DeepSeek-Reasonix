@@ -76,6 +76,9 @@ type TurnControl interface {
 // posture (ask/auto/yolo). It mirrors the approvalManager surface.
 type Approvals interface {
 	Approve(id string, allow, session, persist bool)
+	// ApproveWithOpinion is Approve plus an optional review opinion (Sprint 11
+	// A3); an empty opinion is exactly the legacy Approve behavior.
+	ApproveWithOpinion(id string, allow, session, persist bool, opinion string)
 	ResolvePlanDecision(id string, action PlanDecisionAction) error
 	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
 	// refuses the mutation and steers feedback.

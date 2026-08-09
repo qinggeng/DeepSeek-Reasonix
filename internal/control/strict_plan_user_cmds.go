@@ -24,7 +24,7 @@ func (c *Controller) applyStrictPlanDetail(input, display string) {
 	c.runGuarded(func(ctx context.Context) error {
 		store, err := planstore.Open(c.workspaceRoot)
 		if err != nil {
-			c.notice("strict-plan-detail: " + err.Error())
+			c.strictPlanNotice("strict-plan-detail: " + err.Error())
 			return nil
 		}
 		return c.showPlanDetail(store, id)
@@ -38,27 +38,27 @@ func (c *Controller) showPlanDetail(store *planstore.Store, id string) error {
 	if id == "" {
 		locked, err := store.MostRecentLocked()
 		if err != nil {
-			c.notice("strict-plan-detail: " + err.Error())
+			c.strictPlanNotice("strict-plan-detail: " + err.Error())
 			return nil
 		}
 		id = locked
 	}
 	files, err := store.ReadPlan(id)
 	if err != nil {
-		c.notice(fmt.Sprintf("strict-plan-detail: plan %q 不存在或不可读（%v）", id, err))
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-detail: plan %q 不存在或不可读（%v）", id, err))
 		return nil
 	}
 	state, err := store.ReadRunState(id)
 	if err != nil {
-		c.notice(fmt.Sprintf("strict-plan-detail: plan %q 状态不可读: %v", id, err))
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-detail: plan %q 状态不可读: %v", id, err))
 		return nil
 	}
 	lock, err := store.ReadLock(id)
 	if err != nil {
-		c.notice(fmt.Sprintf("strict-plan-detail: plan %q 锁定信息不可读: %v", id, err))
+		c.strictPlanNotice(fmt.Sprintf("strict-plan-detail: plan %q 锁定信息不可读: %v", id, err))
 		return nil
 	}
-	c.notice(planstore.RenderPlanDetail(files, state, lock))
+	c.strictPlanNotice(planstore.RenderPlanDetail(files, state, lock))
 	return nil
 }
 
@@ -70,7 +70,7 @@ func (c *Controller) applyStrictPlanList(input, display string) {
 	c.runGuarded(func(ctx context.Context) error {
 		store, err := planstore.Open(c.workspaceRoot)
 		if err != nil {
-			c.notice("strict-plan-list: " + err.Error())
+			c.strictPlanNotice("strict-plan-list: " + err.Error())
 			return nil
 		}
 		if id != "" {
@@ -85,11 +85,11 @@ func (c *Controller) applyStrictPlanList(input, display string) {
 func (c *Controller) listPlans(store *planstore.Store) error {
 	ids, err := store.ListPlans()
 	if err != nil {
-		c.notice("strict-plan-list: " + err.Error())
+		c.strictPlanNotice("strict-plan-list: " + err.Error())
 		return nil
 	}
 	if len(ids) == 0 {
-		c.notice("strict-plan-list: 该工作区暂无计划")
+		c.strictPlanNotice("strict-plan-list: 该工作区暂无计划")
 		return nil
 	}
 	var b strings.Builder
@@ -107,6 +107,6 @@ func (c *Controller) listPlans(store *planstore.Store) error {
 		b.WriteString(planstore.RenderPlanListEntry(id, state, lock))
 		b.WriteString("\n")
 	}
-	c.notice(strings.TrimSuffix(b.String(), "\n"))
+	c.strictPlanNotice(strings.TrimSuffix(b.String(), "\n"))
 	return nil
 }

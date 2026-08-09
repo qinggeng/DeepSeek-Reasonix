@@ -228,6 +228,7 @@ var English = Messages{
 	CmdStrictPlanDetail: "view a strict plan's full detail (steps, acceptance script, write scope, change manifest)",
 	CmdStrictPlanList:   "list strict plans (id + stage); with a plan id, show its detail",
 	CmdStrictPlanDelete: "delete a strict plan by id (irreversible; refused while executing)",
+	CmdStrictPlanClear:  "clear all terminal strict plans (done/failed) at once; --yes confirms the irreversible batch delete",
 	CmdStrictPlanExec:   "execute a locked strict plan: acceptance loop to done/failed",
 	CmdClear:            "discard current context",
 	CmdCls:              "clear screen only (keep LLM context)",

@@ -104,12 +104,17 @@ func (s *Store) ReadPlan(id string) (PlanFiles, error) {
 	return files, nil
 }
 
-// DeletePlan removes the encrypted plan directory for id.
+// DeletePlan removes the encrypted plan directory for id, plus the plan's
+// spilled acceptance-script outputs under .reasonix/acceptance-output/<id>
+// (Sprint 11 A1) — neither should outlive the plan.
 func (s *Store) DeletePlan(id string) error {
 	if err := validPlanID(id); err != nil {
 		return err
 	}
-	return os.RemoveAll(filepath.Join(s.plansDir, id))
+	if err := os.RemoveAll(filepath.Join(s.plansDir, id)); err != nil {
+		return err
+	}
+	return os.RemoveAll(s.acceptanceOutputDir(id))
 }
 
 // ListPlans returns the plan ids present in this workspace.

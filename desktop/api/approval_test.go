@@ -404,3 +404,43 @@ func TestHandleReplayPrompts_WrongMethod(t *testing.T) {
 		t.Errorf("expected 405, got %d", w.Code)
 	}
 }
+
+// TC-A3-06 审批意见透传 + omitempty：ApproveRequest.Opinion 经 HandleApprove
+// 到达 mock control；意见缺省时 JSON 不含 opinion 字段。
+func TestHandleApprove_OpinionPassthrough(t *testing.T) {
+	got := ""
+	ctrl := &mockControl{
+		approveFn: func(topicID string, req ApproveRequest) error {
+			got = req.Opinion
+			return nil
+		},
+	}
+
+	body := jsonBody(t, ApproveRequest{ID: "appr-001", Allow: false, Opinion: "验收脚本需覆盖负例"})
+	req := httptest.NewRequest(http.MethodPost, chatURL("topic-dev", "approve"), strings.NewReader(body))
+	w := httptest.NewRecorder()
+	HandleApprove(ctrl)(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got != "验收脚本需覆盖负例" {
+		t.Fatalf("opinion must reach the control layer, got %q", got)
+	}
+}
+
+func TestApproveRequestOpinionOmitempty(t *testing.T) {
+	raw, err := json.Marshal(ApproveRequest{ID: "appr-001", Allow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "opinion") {
+		t.Fatalf("empty opinion must be omitted from the wire JSON, got %s", raw)
+	}
+	raw2, err := json.Marshal(ApproveRequest{ID: "appr-001", Allow: false, Opinion: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw2), `"opinion":"x"`) {
+		t.Fatalf("non-empty opinion must ride the wire JSON, got %s", raw2)
+	}
+}

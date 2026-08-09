@@ -455,7 +455,7 @@ func (c *appControl) Approve(topicID string, req api.ApproveRequest) error {
 	if tabID == "" {
 		return fmt.Errorf("topic not found: %s", topicID)
 	}
-	c.app.ApproveTab(tabID, req.ID, req.Allow, req.Session, req.Persist)
+	c.app.ApproveTabWithOpinion(tabID, req.ID, req.Allow, req.Session, req.Persist, req.Opinion)
 	return nil
 }
 

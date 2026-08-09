@@ -297,6 +297,11 @@ type approvalReply struct {
 	allow   bool
 	session bool
 	persist bool // true = write "always allow" rule to config
+	// opinion is the reviewer's optional free-text guidance attached to the
+	// decision (Sprint 11 A3). Empty means the decision is exactly the
+	// pre-A3 behavior: no opinion section is injected anywhere. Plan reviews
+	// (plan_lock_review / plan_change_review) surface it to the model.
+	opinion string
 }
 
 type pendingApproval struct {
@@ -1503,6 +1508,9 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 		case "/strict-plan-delete":
 			c.applyStrictPlanDelete(trimmed, display)
 			return
+		case "/strict-plan-clear":
+			c.applyStrictPlanClear(trimmed, display)
+			return
 		case "/strict-plan-exec":
 			c.applyStrictPlanExec(trimmed, display)
 			return
@@ -1942,6 +1950,14 @@ func (c *Controller) notice(text string) {
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
 }
 
+// strictPlanNotice emits a Notice tagged with the strict_plan code (Sprint 11
+// B2) so frontends can render strict-plan command output (list/detail/delete/
+// clear/exec progress) with a distinct badge instead of looking like the
+// model's thinking stream.
+func (c *Controller) strictPlanNotice(text string) {
+	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text, Code: event.NoticeCodeStrictPlan})
+}
+
 func (c *Controller) noticeDetail(text, detail string) {
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text, Detail: detail})
 }
@@ -2128,8 +2144,19 @@ func (c *Controller) Turn() int {
 
 // Approve answers a pending ApprovalRequest by ID: allow runs the call, session
 // also remembers a grant for the rest of the session so the same approval scope
-// is not re-prompted. Unknown/expired IDs are ignored.
+// is not re-prompted. Unknown/expired IDs are ignored. It is the legacy entry
+// point (no review opinion); ApproveWithOpinion carries the Sprint 11 A3
+// free-text opinion.
 func (c *Controller) Approve(id string, allow, session, persist bool) {
+	c.ApproveWithOpinion(id, allow, session, persist, "")
+}
+
+// ApproveWithOpinion is Approve plus an optional review opinion attached to the
+// decision (Sprint 11 A3). Plan reviews surface a non-empty opinion to the
+// model (plan rejection feedback / change-denial turn / lock notice); an empty
+// opinion is exactly the legacy behavior.
+func (c *Controller) ApproveWithOpinion(id string, allow, session, persist bool, opinion string) {
+	opinion = strings.TrimSpace(opinion)
 	// Recovery cards are strict fresh decisions. Prefer ResolveRecovery so a
 	// continue/deny from an old client that only knows Approve still maps onto
 	// the recovery state machine (allow=continue, deny=revise without feedback).
@@ -2170,7 +2197,7 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 		}
 	}
 	c.recordDecisionReceipt(pending, outcome)
-	pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
+	pending.reply <- approvalReply{allow: allow, session: session, persist: persist, opinion: opinion} // buffered, never blocks
 }
 
 // ResolvePlanDecision answers the Plan card without collapsing revise and exit

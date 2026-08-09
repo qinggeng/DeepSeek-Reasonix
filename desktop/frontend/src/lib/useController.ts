@@ -229,7 +229,7 @@ export type Item =
   | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
-  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery"; decisionReceipt?: WireDecisionReceipt }
+  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery"; code?: string; decisionReceipt?: WireDecisionReceipt }
   | {
       kind: "compaction";
       id: string;
@@ -2288,7 +2288,7 @@ function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" 
     return { items, seq };
   }
   const trimmedDetail = detail?.trim();
-  return { items: [...items, { kind: "notice", id, level, text, ...(trimmedDetail ? { detail: trimmedDetail } : {}), ...(decisionReceipt ? { decisionReceipt } : {}) }], seq: seq + 1 };
+  return { items: [...items, { kind: "notice", id, level, text, ...(trimmedDetail ? { detail: trimmedDetail } : {}), ...(code ? { code } : {}), ...(decisionReceipt ? { decisionReceipt } : {}) }], seq: seq + 1 };
 }
 
 function appendNoticeToState(s: State, level: "info" | "warn", text: string, detail?: string, code?: string, decisionReceipt?: WireDecisionReceipt): State {
@@ -3293,7 +3293,7 @@ export function useController() {
     return undefined;
   }, [activeTabId, cancelTab, dispatchTo]);
 
-  const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean) => {
+  const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean, opinion = "") => {
     if (!activeTabId) return;
     const tabId = activeTabId;
     // Pin the failure callback to the prompt-id epoch the RPC was issued in:
@@ -3302,7 +3302,13 @@ export function useController() {
     // numeric id (#6432 round 4).
     const epoch = statesRef.current.get(tabId)?.promptEpoch ?? 0;
     dispatchTo(tabId, { type: "clearApproval" });
-    app.ApproveTab(tabId, id, allow, session, persist).catch(() => {
+    // The opinion-carrying binding is preferred (Sprint 11 A3); an older
+    // backend without it falls back to the plain ApproveTab (opinion lost,
+    // which is the best an old backend can do anyway).
+    const request = typeof app.ApproveTabWithOpinion === "function"
+      ? app.ApproveTabWithOpinion(tabId, id, allow, session, persist, opinion)
+      : app.ApproveTab(tabId, id, allow, session, persist);
+    request.catch(() => {
       // The backend never actually resolved this prompt — undo the optimistic
       // tombstone and ask it to replay, so the approval card can come back
       // instead of being silently lost forever (#6432 round 3).

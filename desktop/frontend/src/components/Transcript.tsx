@@ -1741,8 +1741,9 @@ function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["dec
 export function NoticeCard({ item, onAction, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; actionDisabled?: boolean }) {
   const t = useT();
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
+  const isStrictPlan = item.code === "strict_plan";
   return (
-    <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance="true">
+    <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}${isStrictPlan ? " notice-line--strict-plan" : ""}`} data-entrance="true">
       <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />
       <div className="notice-line__text">
         {item.decisionReceipt ? (
@@ -1750,6 +1751,7 @@ export function NoticeCard({ item, onAction, actionDisabled = false }: { item: N
         ) : (
           <>
             {item.title ? <div className="notice-line__title">{item.title}</div> : null}
+            {isStrictPlan && <span className="notice-line__badge">STRICT-PLAN</span>}
             <div className="notice-line__body">{item.text}</div>
           </>
         )}

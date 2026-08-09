@@ -487,6 +487,10 @@ const (
 	NoticeCodeSessionRecoveryDepthCap       = "session_recovery_depth_cap"
 	NoticeCodeSessionShutdownRecoveryForked = "session_shutdown_recovery_forked"
 	NoticeCodeDecisionReceipt               = "decision_receipt"
+	// NoticeCodeStrictPlan marks strict-plan command output (Sprint 11 B2): the
+	// frontend renders it with a distinct badge so list/detail output is not
+	// mistaken for the model's thinking stream.
+	NoticeCodeStrictPlan = "strict_plan"
 )
 
 type Event struct {

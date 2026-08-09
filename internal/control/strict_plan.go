@@ -45,13 +45,13 @@ const planRejectedMessage = `Your plan %s did not pass review and was rejected. 
 func (c *Controller) applyStrictPlan(input, display string) {
 	task := strings.TrimSpace(strings.TrimPrefix(input, "/strict-plan"))
 	if task == "" {
-		c.notice("usage: /strict-plan <任务描述> — 进入计划制定：plan_submit 工具门提交 → 评审锁定 → 输出 plan-id")
+		c.strictPlanNotice("usage: /strict-plan <任务描述> — 进入计划制定：plan_submit 工具门提交 → 评审锁定 → 输出 plan-id")
 		return
 	}
 	c.runGuarded(func(ctx context.Context) error {
 		store, err := planstore.Open(c.workspaceRoot)
 		if err != nil {
-			c.notice("strict-plan: " + err.Error())
+			c.strictPlanNotice("strict-plan: " + err.Error())
 			return nil
 		}
 		return c.runStrictPlan(ctx, store, task, display)
@@ -77,19 +77,34 @@ func (c *Controller) runStrictPlan(ctx context.Context, store *planstore.Store, 
 			return err
 		}
 		if id == "" {
-			c.notice("strict-plan: 计划阶段未在 " + strconv.Itoa(strictPlanMaxRounds) + " 轮内经 plan_submit 提交（工具门未通过），已停下交还你处理")
+			c.strictPlanNotice("strict-plan: 计划阶段未在 " + strconv.Itoa(strictPlanMaxRounds) + " 轮内经 plan_submit 提交（工具门未通过），已停下交还你处理")
 			return nil
 		}
-		locked, err := c.reviewPlan(ctx, store, id)
+		locked, opinion, err := c.reviewPlan(ctx, store, id)
 		if err != nil {
 			return err
 		}
 		if locked {
-			c.notice("strict-plan: plan-id=" + id + " locked")
+			// B1: the plan-stage end must be explicit — the user asked for a
+			// clear "stage over" signal after the lock. The legacy
+			// "strict-plan: plan-id=<id> locked" prefix is preserved so E2E and
+			// unit assertions keep matching; an approval opinion (A3) rides along
+			// when present.
+			msg := "strict-plan: plan-id=" + id + " locked — 计划制定阶段结束，可 /strict-plan-exec " + id + " 开始执行"
+			if opinion != "" {
+				msg += "（审核意见：" + opinion + "）"
+			}
+			c.strictPlanNotice(msg)
 			return nil
 		}
 		// Rejected: send the model back into the drafting loop with feedback.
-		if err := newTurnOrchestrator(c).runComposedSyntheticTurn(ctx, fmt.Sprintf(planRejectedMessage, id)); err != nil {
+		// The reviewer's opinion (A3) is appended when present; empty opinion
+		// keeps the legacy copy exactly.
+		msg := fmt.Sprintf(planRejectedMessage, id)
+		if opinion != "" {
+			msg += "\n\n审核意见：" + opinion
+		}
+		if err := newTurnOrchestrator(c).runComposedSyntheticTurn(ctx, msg); err != nil {
 			return err
 		}
 	}
@@ -151,35 +166,37 @@ func submittedPlan(s *planstore.Store) (string, error) {
 // reviewPlan dispatches the plan-lock review to the user through the approval
 // channel (the model cannot self-approve). On approval it locks the plan and
 // freezes the workspace baseline; on rejection it marks the plan rejected and
-// returns locked=false so the driver can inject rework feedback.
-func (c *Controller) reviewPlan(ctx context.Context, store *planstore.Store, id string) (bool, error) {
+// returns locked=false so the driver can inject rework feedback. The returned
+// opinion (Sprint 11 A3) is the reviewer's optional free-text guidance: it
+// rides the locked notice on approval and the rejection feedback on denial.
+func (c *Controller) reviewPlan(ctx context.Context, store *planstore.Store, id string) (locked bool, opinion string, err error) {
 	reason, err := planReviewReason(store, id)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	// fresh decision: a user trust/business choice, not an ordinary tool
 	// permission — YOLO/auto must not answer or drain it, and the proposing
 	// model can never self-approve (RequiresFreshHumanApprovalTool).
 	r, err := c.requestFreshApprovalDecision(ctx, planLockReviewTool, "Lock plan "+id+"?", nil, reason)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if r.allow {
 		// TakeBaseline before Transition: git-baseline failure (e.g. no git in
 		// the workspace) must leave the plan in submitted — a plan frozen as
 		// locked without a baseline would be unexecutable and stuck.
 		if err := store.TakeBaseline(id); err != nil {
-			return false, err
+			return false, "", err
 		}
 		if err := store.Transition(id, planstore.StageSubmitted, planstore.StageLocked); err != nil {
-			return false, err
+			return false, "", err
 		}
-		return true, nil
+		return true, r.opinion, nil
 	}
 	if err := store.Transition(id, planstore.StageSubmitted, planstore.StageRejected); err != nil {
-		return false, err
+		return false, "", err
 	}
-	return false, nil
+	return false, r.opinion, nil
 }
 
 // planReviewReason builds the human-readable review card digest through the

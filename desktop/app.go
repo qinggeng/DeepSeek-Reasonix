@@ -1814,11 +1814,18 @@ func (a *App) Approve(id string, allow, session, persist bool) {
 	}
 }
 
-// ApproveTab is like Approve but scoped to a specific tab.
+// ApproveTab is like Approve but scoped to a specific tab. It is the legacy
+// no-opinion entry; ApproveTabWithOpinion carries the Sprint 11 A3 opinion.
 func (a *App) ApproveTab(tabID, id string, allow, session, persist bool) {
+	a.ApproveTabWithOpinion(tabID, id, allow, session, persist, "")
+}
+
+// ApproveTabWithOpinion is ApproveTab plus an optional review opinion (Sprint
+// 11 A3): plan reviews surface a non-empty opinion to the model.
+func (a *App) ApproveTabWithOpinion(tabID, id string, allow, session, persist bool, opinion string) {
 	ctrl := a.ctrlForRuntimeTabID(tabID)
 	if ctrl != nil {
-		ctrl.Approve(id, allow, session, persist)
+		ctrl.ApproveWithOpinion(id, allow, session, persist, opinion)
 	}
 }
 
@@ -7378,6 +7385,7 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "strict-plan-detail", Description: i18n.M.CmdStrictPlanDetail, Kind: "builtin", Group: "actions"},
 		{Name: "strict-plan-list", Description: i18n.M.CmdStrictPlanList, Kind: "builtin", Group: "actions"},
 		{Name: "strict-plan-delete", Description: i18n.M.CmdStrictPlanDelete, Kind: "builtin", Group: "actions"},
+		{Name: "strict-plan-clear", Description: i18n.M.CmdStrictPlanClear, Kind: "builtin", Group: "actions"},
 		{Name: "strict-plan-exec", Description: i18n.M.CmdStrictPlanExec, Kind: "builtin", Group: "actions"},
 		{Name: "clear", Description: i18n.M.CmdClear, Kind: "builtin", Group: "actions"},
 		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin", Group: "actions"},

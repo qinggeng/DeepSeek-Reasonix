@@ -295,6 +295,97 @@ func TestStrictPlanExecOutOfManifestChange(t *testing.T) {
 	waitPlanStage(t, h, "plan-001", planstore.StageDone)
 }
 
+// TC-A1-06 大输出反馈注入：验收失败且输出超阈值时，注入下一轮的反馈含摘要
+// （head/行数/错误行）与完整文件路径告知，不含完整输出正文。
+func TestStrictPlanExecLargeOutputFeedbackInjected(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) { writeWS(t, h, "data.txt", "partial") },
+		func(input string) {
+			// 摘要：head 行、错误行提取、完整路径告知；不含完整输出正文。
+			if !strings.Contains(input, "full output saved to") {
+				t.Errorf("round-2 prompt must tell the model where the full output lives")
+			}
+			if !strings.Contains(input, "noise line 0") || !strings.Contains(input, "ERROR: expected") {
+				t.Errorf("round-2 prompt must carry the summary (head + error lines), got %.400s", input)
+			}
+			if strings.Contains(input, "noise line 850") {
+				t.Errorf("round-2 prompt must NOT carry the full output body")
+			}
+			// 落盘文件真实存在且含完整输出（模型可经 bash 读取）。
+			if idx := strings.Index(input, "full output saved to "); idx >= 0 {
+				rest := input[idx+len("full output saved to "):]
+				if nl := strings.IndexByte(rest, ')'); nl >= 0 {
+					rest = rest[:nl]
+				}
+				if data, err := os.ReadFile(rest); err != nil || !strings.Contains(string(data), "noise line 850") {
+					t.Errorf("spilled file %q must exist with the full output (err=%v)", rest, err)
+				}
+			}
+			writeWS(t, h, "data.txt", "done")
+		},
+	}, nil)
+	writeWS(t, h, "data.txt", "v0")
+	commitWS(t, h)
+	// 失败分支输出 ~900 行（> 8KB 默认阈值），成功分支输出小。
+	script := `import sys
+with open('data.txt') as f:
+    content = f.read()
+if 'done' not in content:
+    print("noise line 0")
+    for i in range(1, 300):
+        print("noise line %d" % i)
+    print("ERROR: expected 'done', got %r" % content)
+    for i in range(300, 900):
+        print("noise line %d" % i)
+    sys.exit(1)
+print("OK")
+`
+	lockPlan(t, h, "plan-001", script, []planstore.ManifestEntry{{Path: "data.txt", Action: "modify"}})
+
+	from := runExec(h, "plan-001")
+	if _, ok := h.nextNotice(from, "第 1 轮未通过", 10*time.Second); !ok {
+		t.Fatal("failed round must emit a progress notice")
+	}
+	if _, ok := h.nextNotice(from, "plan-id=plan-001 done", 10*time.Second); !ok {
+		t.Fatal("retried round must pass and emit done")
+	}
+	waitPlanStage(t, h, "plan-001", planstore.StageDone)
+}
+
+// TC-A1-07 小输出反馈注入（回归）：验收失败且输出 ≤ 阈值 → 注入完整输出正文，
+// 无路径告知（现状行为保留）。
+func TestStrictPlanExecSmallOutputFeedbackWhole(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) { writeWS(t, h, "data.txt", "partial") },
+		func(input string) {
+			if !strings.Contains(input, "UNIQUE-FAILURE-TOKEN") {
+				t.Errorf("round-2 prompt must carry the small failure output whole, got %.400s", input)
+			}
+			if strings.Contains(input, "full output saved to") {
+				t.Errorf("small output must not carry a spill-path note")
+			}
+			writeWS(t, h, "data.txt", "done")
+		},
+	}, nil)
+	writeWS(t, h, "data.txt", "v0")
+	commitWS(t, h)
+	lockPlan(t, h, "plan-001", `import sys
+with open('data.txt') as f:
+    if 'done' not in f.read():
+        print("UNIQUE-FAILURE-TOKEN: data.txt not ready")
+        sys.exit(1)
+print("OK")
+`, []planstore.ManifestEntry{{Path: "data.txt", Action: "modify"}})
+
+	from := runExec(h, "plan-001")
+	if _, ok := h.nextNotice(from, "plan-id=plan-001 done", 10*time.Second); !ok {
+		t.Fatal("retried round must pass and emit done")
+	}
+	waitPlanStage(t, h, "plan-001", planstore.StageDone)
+}
+
 // TC-CR-05b 批准锁定但基线失败（非 git 工作区）→ 计划留在 submitted，不产生
 // "locked 无 baseline" 僵尸（reviewPlan 顺序：TakeBaseline 先于 Transition）。
 func TestApprovalBaselineFailureKeepsSubmitted(t *testing.T) {
@@ -556,3 +647,73 @@ func TestPlanChangeReviewRequiresFreshHuman(t *testing.T) {
 }
 
 var _ = context.Background // keep import when helpers shrink
+
+// TC-A3-04 变更审批拒绝带意见 → 模型收到合成轮（含意见原文），原验收标准继续；
+// 意见为空 → 不产生合成轮（与现状一致，不烧轮次）。
+func TestChangeReviewDenyCarriesOpinion(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) {
+			writeWS(t, h, "data.txt", "v2")
+			requestChange(t, h, "plan-001", "script wants v1 but the fix is v2", validateDataContains("v2"))
+		},
+		func(input string) {
+			if !strings.Contains(input, "审核意见") || !strings.Contains(input, "v2 不在清单内") {
+				t.Errorf("denied-with-opinion synthetic turn must carry the opinion, got %.400s", input)
+			}
+		},
+		func(string) { writeWS(t, h, "data.txt", "v1") },
+	}, nil)
+	h.setOpinionResponder(func(e event.Event) (bool, string) {
+		if e.Approval.Tool == planChangeReviewTool {
+			return false, "v2 不在清单内"
+		}
+		return false, ""
+	})
+	writeWS(t, h, "data.txt", "v0")
+	commitWS(t, h)
+	lockPlan(t, h, "plan-001", validateDataContains("v1"), []planstore.ManifestEntry{{Path: "data.txt", Action: "modify"}})
+
+	from := runExec(h, "plan-001")
+	if _, ok := h.nextNotice(from, "变更请求被拒绝", 10*time.Second); !ok {
+		t.Fatal("denied change must emit a notice")
+	}
+	if _, ok := h.nextNotice(from, "plan-id=plan-001 done", 10*time.Second); !ok {
+		t.Fatal("original standard must still allow a passing round")
+	}
+	waitPlanStage(t, h, "plan-001", planstore.StageDone)
+	// 轮次账目：第 1 轮（变更+拒绝+合成轮）+ 第 2 轮（按原标准修正通过）。
+	if h.runner.runCount != 3 {
+		t.Fatalf("runner calls = %d, want 3 (turn 1 + opinion turn + turn 2)", h.runner.runCount)
+	}
+}
+
+func TestChangeReviewDenyWithoutOpinionNoSyntheticTurn(t *testing.T) {
+	var h *strictPlanHarness
+	h = newStrictPlanHarness(t, []func(string){
+		func(string) {
+			writeWS(t, h, "data.txt", "v2")
+			requestChange(t, h, "plan-001", "script wants v1 but the fix is v2", validateDataContains("v2"))
+		},
+		func(string) { writeWS(t, h, "data.txt", "v1") },
+	}, nil)
+	h.setOpinionResponder(func(e event.Event) (bool, string) {
+		if e.Approval.Tool == planChangeReviewTool {
+			return false, ""
+		}
+		return false, ""
+	})
+	writeWS(t, h, "data.txt", "v0")
+	commitWS(t, h)
+	lockPlan(t, h, "plan-001", validateDataContains("v1"), []planstore.ManifestEntry{{Path: "data.txt", Action: "modify"}})
+
+	from := runExec(h, "plan-001")
+	if _, ok := h.nextNotice(from, "plan-id=plan-001 done", 10*time.Second); !ok {
+		t.Fatal("empty-opinion deny must still let the loop continue to done")
+	}
+	waitPlanStage(t, h, "plan-001", planstore.StageDone)
+	// 无合成轮：恰好两轮真实模型轮（第 1 轮失败 + 第 2 轮修正通过）。
+	if h.runner.runCount != 2 {
+		t.Fatalf("runner calls = %d, want 2 (no synthetic turn on empty opinion)", h.runner.runCount)
+	}
+}

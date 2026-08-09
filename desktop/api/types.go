@@ -86,11 +86,14 @@ type ChatStatus struct {
 // --- Approval types (Sprint 4) ---
 
 // ApproveRequest is the request body for approving/denying a pending tool call.
+// Opinion (Sprint 11 A3) is optional free-text guidance attached to the
+// decision; empty means the legacy behavior.
 type ApproveRequest struct {
 	ID      string `json:"id"`
 	Allow   bool   `json:"allow"`
 	Session bool   `json:"session"`
 	Persist bool   `json:"persist"`
+	Opinion string `json:"opinion,omitempty"`
 }
 
 // AnswerRequest is the request body for answering pending ask questions.
